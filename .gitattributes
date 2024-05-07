@@ -1,1 +1,2 @@
 model_weights/adult_model/mask_gene_5000_pathway8886.txt filter=lfs diff=lfs merge=lfs -text
+model_weights/fetal_model/mask_gene_5000_pathway8954.txt filter=lfs diff=lfs merge=lfs -text
