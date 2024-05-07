@@ -4,8 +4,9 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 [DOI: 10.1101/2024.02.28.582494](https://doi.org/10.1101/2024.02.28.582494)
 
-
 the model weights used in article list in model_weights folder
+
+
 
 model train:
 for example config
