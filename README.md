@@ -6,3 +6,12 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 
 the model weights used in article list in model_weights folder
+
+model train:
+for example config
+ann = sc.read_h5ad("./resource/train_simu_sample_80w.h5ad")
+gmt = "./resource/c5.go.bp.v2023.1.Hs.symbols.gmt"
+project_name = "deconformer_train_save_files_"
+run python deconformer_train
+fitting started!
+
