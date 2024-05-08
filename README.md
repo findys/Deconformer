@@ -21,6 +21,7 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 ```python
 python  deconformer_predict.py  saved_model_path  expression_profile 
+```
 
 #### Input:
 
