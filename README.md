@@ -26,11 +26,11 @@ python  deconformer_predict.py  saved_model_path  expression_profile
 
 #### Input:
 
-- `**expression_profile**`: An expression profile of a cfRNA sample in CSV format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
-- `**saved_model_path**`: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
+- `expression_profile`: An expression profile of a cfRNA sample in `CSV` format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
+- `saved_model_path`: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
 
 #### Output:
-- `**prefix_deconformer_re.txt**`: A text file named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
+- `prefix_deconformer_re.txt`: A `txt` named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
 
 
 
