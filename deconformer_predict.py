@@ -12,11 +12,11 @@ import numpy as np
 from deconformer_model import deconformer
 import scanpy as sc
 
-#save_file_dir = sys.argv[1]
-#pred_data = sys.argv[2]
+save_file_dir = sys.argv[1]
+pred_data = sys.argv[2]
 
-save_file_dir = "./adult_model_save_pt/"
-pred_data = "tiye.exp.txt"
+#save_file_dir = "./adult_model_save_pt/"
+#pred_data = "tiye.exp.txt"
 
 
 
