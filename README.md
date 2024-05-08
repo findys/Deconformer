@@ -8,8 +8,9 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 ## Requirements
 
-- **Operating System**: Linux/UNIX/Windows system
+- **OS**: Linux/UNIX/Windows
 - **Python Version**: >= 3.10.12
-- **Library**: torch >= 2.0.0 
-               scanpy>=1.9.3
+- **Library**:
+  - torch >= 2.0.0
+  - scanpy >= 1.9.3
 
