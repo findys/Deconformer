@@ -4,20 +4,11 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 [DOI: 10.1101/2024.02.28.582494](https://doi.org/10.1101/2024.02.28.582494)
 
-the model weights used in article list in model_weights folder
 
 
+## Requirements
 
-model train:
-for example config
-
-ann = sc.read_h5ad("./resource/train_simu_sample_80w.h5ad")
-
-gmt = "./resource/c5.go.bp.v2023.1.Hs.symbols.gmt"
-
-project_name = "deconformer_train_save_files_"
-
-run python deconformer_train
-
-fitting started!
+- **Operating System**: Linux/UNIX/Windows system
+- **Python Version**: >= 3.10.12
+- **Library**: torch >= 2.0.0 scanpy>=1.9.3
 
