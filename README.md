@@ -43,3 +43,4 @@ python  deconformer_simulate.py
  ```python
 python  deconformer_train.py
 ```
+#### step 3: Infer cfRNA samples, usage as in usage 1.
