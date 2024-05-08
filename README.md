@@ -31,3 +31,10 @@ python  deconformer_predict.py  saved_model_path  expression_profile
 
 #### Output:
 - **prefix_deconformer_re.txt**: A text file named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
+
+
+### Usage 2: Train a model from scratch for custom target cell types
+#### step 1: simulate cfRNA smaples
+```python
+python  deconformer_simulate.py
+```
