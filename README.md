@@ -39,3 +39,7 @@ python  deconformer_predict.py  saved_model_path  expression_profile
 ```python
 python  deconformer_simulate.py
 ```
+#### step 2: trainning deconformer model
+ ```python
+python  deconformer_train.py
+```
