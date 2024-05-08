@@ -5,7 +5,7 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 [DOI: 10.1101/2024.02.28.582494](https://doi.org/10.1101/2024.02.28.582494)
 
 ## Deconformer model structure
-!(model_structure.png)
+![model structure](model_structure.png)
 
 ## Requirements
 
