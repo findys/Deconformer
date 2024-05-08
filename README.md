@@ -17,7 +17,8 @@ preprint article : Pathway-enhanced Transformer-based model for robust enumerati
 
 ## Usage
 
-### Step 1: only use pre-trained the model to inference cfRNA samples
+### Usage 1: only use pre-trained the model to inference cfRNA samples
+Inference of cfRNA samples using a pre-trained model does not require a GPU, and about 200 samples can be inferred in 10 minutes on a laptop without a dedicated GPU.
 
 ```python
 python  deconformer_predict.py  saved_model_path  expression_profile 
