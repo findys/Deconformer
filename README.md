@@ -41,7 +41,7 @@ python  deconformer_simulate.py
 ```
 #### step 2: trainning deconformer model
  ```python
-python  deconformer_train.py  ann_simulated_data  gmt_file  
+python  deconformer_train.py  ann_simulated_data  gmt_file  project_name
 ```
 ###### Input:
 - `ann_simulated_data`: A `AnnData` object which saved the simulated cfRNA data
