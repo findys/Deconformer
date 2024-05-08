@@ -25,5 +25,5 @@ python  deconformer_predict.py  saved_model_path  expression_profile
 
 #### Input:
 
-- **expression_profile**: An expression profile of a cfRNA sample in CSV format, for which you need to infer the source scores. .
-- **saved_model_path**: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weight/adult_model/ ).
+- **expression_profile**: An expression profile of a cfRNA sample in CSV format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
+- **saved_model_path**: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
