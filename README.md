@@ -41,6 +41,14 @@ python  deconformer_simulate.py
 ```
 #### step 2: trainning deconformer model
  ```python
-python  deconformer_train.py
+python  deconformer_train.py  ann_simulated_data  gmt_file  
 ```
+###### Input:
+- `ann_simulated_data`: A `AnnData` object which saved the simulated cfRNA data
+- `gmt_file`: A `gmt` file that contains pathway information. This study uses GSEA C5 GOBP pathway, and users may choose other pathway data.
+- `project_name`:  Users customize a ` project name`, and the model parameters and mask matrix trained subsequently will automatically be saved in a folder named after this project.
+##### Output:
+- `model_checkpoint_epoch_n.pt`: A `pt` file that saves the model parameters of the nth epoch.
+- `mask_gene_n_pathway_m.txt`: A mask matrix created from the given `gmt` file, where `n` is the number of pathways and `m` is the number of genes.
+
 #### step 3: Infer cfRNA samples, usage as in usage 1.
