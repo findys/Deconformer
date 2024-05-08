@@ -15,10 +15,6 @@ import scanpy as sc
 save_file_dir = sys.argv[1]
 pred_data = sys.argv[2]
 
-#save_file_dir = "./adult_model_save_pt/"
-#pred_data = "tiye.exp.txt"
-
-
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -35,10 +31,10 @@ def load_model(model_path, device, num_cell_types, mask_matrix):
     return model
 
 # 预测函数
-def predict(model, data, device):
+def predict(model, data, device,num_cell_types):
     model.eval()
     with torch.no_grad():
-        pre_frac = np.zeros((data.shape[0], 60))
+        pre_frac = np.zeros((data.shape[0], num_cell_types))
         row_index = 0
         for i in range(data.X.shape[0]):
             print(f"Sample Name: {data.obs_names[i]}")
@@ -81,7 +77,7 @@ def loadmodel_pred(file_dir,trained_model,mask,pre_data,cell_type,device):
     # 加载模型
     print("load model : ")
     saved_model = file_dir + trained_model  # 你模型的路径
-    num_cell_types = 60  # cell类型数量
+    num_cell_types = len(cell_type)  # cell类型数量
     df_mask = mask
     mask_matrix = torch.from_numpy(df_mask.T.to_numpy()).int().to(device)
     loaded_model = load_model(saved_model, device, num_cell_types, mask_matrix)
@@ -91,7 +87,7 @@ def loadmodel_pred(file_dir,trained_model,mask,pre_data,cell_type,device):
     adata.X = np.log2(adata.X + 1)
     scaled_adata = adata
     # 使用加载的模型进行预测
-    pre_fraction = predict(loaded_model, scaled_adata, device)
+    pre_fraction = predict(loaded_model, scaled_adata, device,num_cell_types)
     df_pre = pd.DataFrame(pre_fraction, index=adata.obs_names.tolist(), columns=cell_type)
     print(df_pre)
 
