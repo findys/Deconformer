@@ -35,12 +35,12 @@ python  deconformer_predict.py  saved_model_path  expression_profile
 
 
 ### Usage 2: Train a model from scratch for custom target cell types
-#### step 1: simulate cfRNA smaples
+### step 1: simulate cfRNA smaples
 ```python
 python  deconformer_simulate.py
 ```
-#### step 2: trainning deconformer model
+### step 2: trainning deconformer model
  ```python
 python  deconformer_train.py
 ```
-#### step 3: Infer cfRNA samples, usage as in usage 1.
+### step 3: Infer cfRNA samples, usage as in usage 1.
