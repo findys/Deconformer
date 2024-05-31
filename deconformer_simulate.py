@@ -115,7 +115,7 @@ def simulate(cell_data_dict,cell_type_order,genes,simu_batch,n_sample,save_path)
     ann_simi.write_h5ad(save_path+"simulated_2w_"+str(simu_batch)+"_"+str(save_time)+".h5ad")
 
 # 设置参数
-cell_data_directory =  "./resource/NBT_merged_cells_10000_dense" #
+cell_data_directory =  "./resource/Nsingle_cell_reference_data" #
 simulate_save_path = "./resource/simulated_datas/"
 
 df_cell_types = pd.read_csv("./resource/NBT_simu_cell_order_sccpm.txt",sep='\t',index_col=0)
