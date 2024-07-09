@@ -1,7 +1,4 @@
 
-
-
-
 import os
 import numpy as np
 import pandas as pd
@@ -29,18 +26,20 @@ def load_data_from_directory(directory_path,gene_order):
             cell_data_dict[cell_type] = cell_np
     return cell_data_dict
 
+
 # 使用Numba加速的随机生成细胞类型比例函数
 @jit(nopython=True)
-def generate_frac(sample_composition=60):
+def generate_frac(num_all_cell_type):
+    cell_composition = int(num_all_cell_type/3+0.5)
+    sample_composition = np.random.randint(2, cell_composition)
     random_vector = np.random.random(size=(sample_composition,))
     vector_sum = np.sum(random_vector)
     normalized_vector = random_vector / vector_sum
-    frac = np.zeros(60)
+    frac = np.zeros(num_all_cell_type)
     frac[:sample_composition] = normalized_vector
     np.random.shuffle(frac)
     return frac
-
-
+    
 
 def each_cell_contribution(cell_data, frac):
     # 确定样本数量，限制在200到800之间，以及不超过cell_data中的细胞数量
