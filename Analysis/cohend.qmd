@@ -1,0 +1,131 @@
+---
+title: "Pathway network"
+format: html
+editor: visual
+---
+
+```{r}
+rm(list = ls())
+setwd("/Users/yukisetsuna/Desktop/Decon_test/cohend")
+
+library(tidyverse)
+library(igraph)
+library(data.table)
+library(RColorBrewer)
+```
+
+```{r}
+sink("/Users/yukisetsuna/Desktop/Decon_test/cohend/cohend.sessionInfo.txt")
+sessionInfo()
+sink()
+```
+
+Import the data, convert it into an edge list, and save the top 100 cohend values.
+
+```{r}
+#| eval: false
+#| include: false
+edge.df <- fread("COVID_cohend_attention.txt", header = TRUE, sep = "\t") %>%
+    as.data.frame() %>% dplyr::rename("source" = "V1") %>% 
+    gather(key = "target", value = "cohend", -source) %>%
+    filter(target != "cls_token", source != "cls_token") %>%
+    arrange(cohend %>% abs() %>% desc()) %>%
+    filter(row_number() <= 100)
+
+head(edge.df)
+```
+
+Plot the network.
+
+```{r}
+#| eval: false
+#| include: false
+network <- graph_from_data_frame(d = edge.df %>% 
+                                     dplyr::rename("weight"="cohend") %>%
+                                     mutate(weight = abs(weight)), 
+                                 directed = F)
+deg <- degree(network, mode="all")
+
+comm <- cluster_louvain(network)
+label <- ifelse(deg >= 5, 
+                paste0(comm$names, "\nfrequency: ", deg, " / 100"), "")
+
+num_colors <- max(comm$membership) + 1
+
+# 使用 colorRampPalette 生成足够的颜色
+if (num_colors > 12) {
+  base_colors <- brewer.pal(min(num_colors, 12), "Paired")
+  colors <- colorRampPalette(base_colors)(num_colors)
+} else {
+  colors <- brewer.pal(num_colors, "Paired")
+}
+
+
+pdf()
+plot(comm, network, vertex.label = label, vertex.label.cex = 0.5, 
+     vertex.size= 0.5 * deg + 2,
+     edge.width = E(network)$weight,
+     vertex.frame.width = 1,
+     vertex.frame.color = adjustcolor("black", alpha.f = 0.6),
+     edge.color = adjustcolor("black", alpha.f = 0.6),
+     vertex.label.dist = 2.5,  # 控制标签与顶点之间的距离
+     vertex.label.degree = -pi/2,
+     vertex.color = colors[comm$membership + 1],
+     vertex.label.font = 2, vertex.label.family = "sans")
+dev.off()
+```
+
+## Loop through multiple prefixes and generate paper plots accordingly
+
+Since the 5000\*5000 matrix of attention scores between pathway pairs is too large, you can directly import the Top100 pathway pairs provided in the article to replace the part of the code that generates `edge_df`.
+
+```{r}
+for (prefix in c("COVID", "HCC", "PE_early", "PE_late",
+                 "GDM_early", "GDM_middle", "GDM_late")) {
+# for (prefix in c("PE_early", 
+#                  "GDM_late")) {
+    edge.df <- fread(prefix %>% paste0("_cohend_attention.txt"), 
+                     header = TRUE, sep = "\t") %>%
+        as.data.frame() %>% dplyr::rename("source" = "V1") %>% 
+        gather(key = "target", value = "cohend", -source) %>%
+        filter(target != "cls_token", source != "cls_token") %>%
+        arrange(cohend %>% abs() %>% desc()) %>%
+        filter(row_number() <= 100)
+    
+    edge.df %>% write_csv(file = paste0(prefix, ".cohend_top100.csv"))
+    
+    network <- graph_from_data_frame(d = edge.df %>% 
+                                     dplyr::rename("weight"="cohend") %>%
+                                     mutate(weight = abs(weight)), 
+                                     directed = F)
+    deg <- degree(network, mode="all")
+    
+    comm <- cluster_louvain(network)
+    label <- ifelse(deg >= 5, 
+                    paste0(comm$names, "\nfrequency: ", deg, " / 100"), "")
+    
+    num_colors <- max(comm$membership) + 1
+    
+    # 使用 colorRampPalette 生成足够的颜色
+    if (num_colors > 12) {
+      base_colors <- brewer.pal(min(num_colors, 12), "Paired")
+      colors <- colorRampPalette(base_colors)(num_colors)
+    } else {
+      colors <- brewer.pal(num_colors, "Paired")
+    }
+    
+    
+    pdf(prefix %>% paste0("_cohend_network.pdf"))
+    plot(comm, network, vertex.label = label, vertex.label.cex = 0.5, 
+         vertex.size= 0.5 * deg + 2,
+         edge.width = E(network)$weight,
+         vertex.frame.width = 1,
+         vertex.frame.color = adjustcolor("black", alpha.f = 0.6),
+         edge.color = adjustcolor("black", alpha.f = 0.6),
+         vertex.label.dist = 2.5,  # 控制标签与顶点之间的距离
+         vertex.label.degree = -pi/2,
+         vertex.color = colors[comm$membership + 1],
+         vertex.label.font = 2, vertex.label.family = "sans")
+    dev.off()
+}
+```

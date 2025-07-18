@@ -1,0 +1,1024 @@
+---
+title: "dim_red"
+format: html
+editor: visual
+---
+
+```{r}
+rm(list = ls())
+setwd("/Users/yukisetsuna/Desktop/Decon_test/dimred")
+
+library(tidyverse)
+library(pheatmap)
+library(pROC)
+library(boot)
+# library(e1071)
+library(caret)
+# library(randomForest)
+library(glmnet)
+library(doParallel)
+library(RColorBrewer)
+library(UpSetR)
+# library(xgboost)
+library(parallel)
+library(lightgbm)
+library(scales)
+# library(AnnotationDbi)
+# library(org.Hs.eg.db)
+library(jsonlite)
+library(patchwork)
+library(PRROC)
+library(readxl)
+# library(ggsignif)
+```
+
+```{r}
+sink("model_explain.sessionInfo.txt")
+sessionInfo()
+
+sink()
+```
+
+## Import Data
+
+Import CLS and proportion data
+
+```{r}
+#| eval: false
+#| include: false
+import_mat <- function(path) {
+    df <- read_delim(
+        path,
+        delim = "\t",
+        escape_double = FALSE,
+        trim_ws = TRUE
+    )
+    colnames(df)[1] <- "Sample"
+    df %>% column_to_rownames("Sample") %>%
+        as.matrix()
+}
+
+mat.cls.covid <- import_mat("covid_cls.tsv")
+mat.cls.hcc <- import_mat("HCC_cls.tsv")
+mat.frac.covid <- import_mat("newcovid.txt.adult_model.epoch15.tsv")
+mat.frac.hcc <- import_mat("elife1_tpm_mRNA.txt.adult_model.epoch15.tsv")
+```
+
+## Process Matrices
+
+```{r}
+process_mat.covid <- function(mat) {
+    mat %>% as.data.frame() %>% 
+    rownames_to_column("Sample") %>% 
+    mutate(Group = case_when(
+        Sample %>% startsWith("Mild") ~ "Mild",
+        Sample %>% startsWith("Severe") ~ "Severe",
+        TRUE ~ "Other"
+    )) %>% 
+    filter(Group != "Other") %>%
+    select(Sample, Group, everything())
+}
+
+process_mat.hcc <- function(mat) {
+    mat %>% as.data.frame() %>% 
+    rownames_to_column("Sample") %>% 
+    mutate(Group = case_when(
+        Sample %>% startsWith("HCC") ~ "HCC",
+        Sample %>% startsWith("NC") ~ "NC",
+        TRUE ~ "Other"
+    )) %>% 
+    filter(Group != "Other") %>%
+    select(Sample, Group, everything())
+}
+
+df.cls.covid <- process_mat.covid(mat.cls.covid)
+df.frac.covid <- process_mat.covid(mat.frac.covid)
+df.cls.hcc <- process_mat.hcc(mat.cls.hcc)
+df.frac.hcc <- process_mat.hcc(mat.frac.hcc)
+
+```
+
+## Calculate Differences
+
+```{r}
+# df <- df.frac.hcc
+get_diff_df <- function(df, df_name) {
+    cols <- df %>% select(-Sample, -Group) %>% colnames()
+    group <- df %>% pull("Group") %>% unique()
+    df.diff <- data.frame()
+    
+    for (col in cols) {
+        x <- df %>% filter(Group == group[1]) %>% pull(col)
+        y <- df %>% filter(Group == group[2]) %>% pull(col)
+        res <- wilcox.test(x, y)
+        
+        df.diff <- df.diff %>% rbind(
+            data.frame(
+                Key = col,
+                Group1 = group[1],
+                Group1_mean = x %>% mean(),
+                Group1_median = x %>% median(),
+                Group2 = group[2],
+                Group2_mean = y %>% mean(),
+                Group2_median = y %>% median(),
+                p_wilcox = res$p.value
+            )
+        )
+    }
+    
+    df.diff$padj_BH <- df.diff$p_wilcox %>% p.adjust(method = "BH")
+    # df.diff <- df.diff %>% filter(padj_BH < 0.05 | p_wilcox < 0.05) 
+    
+    df.diff %>% write.csv(paste0("df_diff/", df_name, ".csv"), row.names = FALSE)
+    df %>% select(c("Sample", "Group", 
+                    df.diff %>% filter(padj_BH < 0.05) %>% pull("Key")))
+}
+
+
+
+
+df.cls.covid.diff <- get_diff_df(df.cls.covid, "df.cls.covid")
+df.frac.covid.diff <- get_diff_df(df.frac.covid, "df.frac.covid")
+df.cls.hcc.diff <- get_diff_df(df.cls.hcc, "df.cls.hcc")
+df.frac.hcc.diff <- get_diff_df(df.frac.hcc, "df.frac.hcc")
+```
+
+Save results
+
+```{r}
+save.image(file = "model_explain.Rdata")
+```
+
+## Unsupervised Clustering
+
+```{r}
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FB9A99" "#E31A1C" "#FDBF6F" "#FF7F00" "#CAB2D6" "#6A3D9A" "#FFFF99" "#B15928"
+
+plot_heatmap <- function(df, plot_name) {
+    mat <- df %>%
+        select(-Group) %>% column_to_rownames("Sample") %>% as.matrix()
+    groups <- df %>% pull("Group")
+    
+    annotation_df <- data.frame(Group = df %>% pull("Group"))
+    rownames(annotation_df) <- rownames(mat)
+    
+    # 自定义颜色插值：
+    my_color <- colorRampPalette(rev(brewer.pal(n = 9, name ="PuOr")))(100)
+    
+    pheatmap(
+        mat %>% t(),
+        scale = "row",
+        clustering_distance_cols = "correlation",
+        clustering_distance_rows = "euclidean",
+        annotation_col = annotation_df,
+        annotation_names_col = FALSE,
+        # annotation_col = annotation_col_df,  # 添加列注释
+        show_rownames = FALSE,
+        show_colnames = FALSE,
+        main = plot_name,
+        # cluster_cols = FALSE,
+        treeheight_row = FALSE,
+        color = my_color
+    )
+}
+
+pdf("Cluster.pdf", onefile = TRUE, width = 7, height = 7)
+plot_heatmap(df.frac.covid, "COVID-19 Standardized Cell Proportion")
+plot_heatmap(df.frac.covid.diff, "COVID-19 Standardized Differential Cell Proportion")
+plot_heatmap(df.cls.covid, "COVID-19 Standardized [CLS] Attention Scores")
+plot_heatmap(df.cls.covid.diff, "COVID-19 Standardized Differential [CLS] Attention Scores")
+plot_heatmap(df.frac.hcc, "HCC Standardized Cell Proportion")
+plot_heatmap(df.frac.hcc.diff, "HCC Standardized Differential Cell Proportion")
+plot_heatmap(df.cls.hcc, "HCC Standardized [CLS] Attention Scores")
+plot_heatmap(df.cls.hcc.diff, "HCC Standardized Differential [CLS] Attention Scores")
+dev.off()
+```
+
+## Modeling Classification
+
+### Integrate lightgbm into caret
+
+LightGBM training and testing workflow
+
+```{r}
+library(lightgbm)
+data_lgb <- lgb.Dataset(data = train_data %>% select(-Sample, -Group) %>% as.matrix(), 
+                        label = as.integer(train_data$Group) - 1)
+
+params <- list(
+  objective = "binary",
+  metric = "binary_logloss",
+  boosting = "gbdt",
+  num_leaves = 31,
+  learning_rate = 0.05,
+  feature_fraction = 0.9,
+  bagging_fraction = 0.8,
+  bagging_freq = 5,
+  verbose = -1
+)
+
+# 训练模型
+model <- lgb.train(params, data_lgb, 100)
+
+probs <- predict(model, test_data %>% select(-Sample, -Group) %>% as.matrix())
+
+preds <- factor(ifelse(probs >= 0.5, 2, 1), labels = levels(df$Group), levels = c(1, 2))
+
+```
+
+Define caret model instance
+
+```{r}
+lgbm <- list(type = "Classification",
+             library = c("lightgbm", "dplyr"),
+             loop = NULL)
+# 定义参数
+params.mat <- matrix(
+    c("objective", "character",
+      "metric", "character",
+      "num_leaves", "numeric",
+      "max_depth", "numeric",
+      "min_data_in_leaf", "numeric",
+      "min_sum_hessian_in_leaf", "numeric",
+      "learning_rate", "numeric",
+      "reg_alpha", "numeric",
+      "reg_lambda", "numeric",
+      "bagging_fraction", "numeric",
+      "bagging_freq", "numeric",
+      "feature_fraction", "numeric",
+      "num_iterations", "numeric"
+      ), 
+    byrow = TRUE, ncol = 2)
+lgbm$parameters <- params.mat %>% data.frame() %>% 
+    setNames(c("parameter", "class")) %>%
+    mutate(label = parameter)
+# 参数的grid
+lgbm$param_grid <- list(
+    objective = "binary",
+    # 目标函数
+    metric = "binary_logloss",
+    # 二分类问题的评估指标
+    num_leaves = c(6, 11),
+    # 叶子节点数
+    max_depth = c(5, 10),
+    # 最大深度
+    min_data_in_leaf = 20,
+    # 每个叶子节点的最小样本数
+    min_sum_hessian_in_leaf = 0.001,
+    # 每个叶子节点的最小Hessian和
+    learning_rate = c(0.05, 0.1),
+    # 学习率
+    reg_alpha = c(0.1, 0.5),
+    # L1正则化系数
+    reg_lambda = 0,
+    # L2正则化系数
+    bagging_fraction = 1,
+    # 行采样比例
+    bagging_freq = 0,
+    # 行采样的频率
+    feature_fraction = 1,
+    # 列采样比例
+    num_iterations = 100
+    # 迭代次数
+) %>% expand.grid()
+
+# grid函数仅作占位符
+lgbm$grid <- function(x, y, len = NULL, search = "grid") {
+    lgbm$param_grid
+}
+
+# 定义训练方法
+lgbm.fit <- function(x, y, wts, param, lev, last, weights, classProbs) { 
+    n_posi <- sum(y == lev[2])
+    params <- list(
+        verbose = -1,
+        # nthread = detectCores() - 1,
+        nthread = 1,
+        seed = 2025,
+        scale_pos_weight = (length(y) - n_posi) / n_posi
+        # scale_pos_weight = 1
+    )
+    for (i in 1: ncol(param)) {
+        param_name <- colnames(param)[i]
+        params[[param_name]] <- param[1, i]
+    }
+    
+    y <- factor(y, lev)
+    data_lgb <- lgb.Dataset(data = x %>% as.matrix(), label = as.integer(y) - 1)
+    
+    model.list <- list(model = lgb.train(params, data_lgb),
+                       factor_levels = lev)
+    # 将因子顺序保存在模型对象中
+    # model$factor_levels <- lev
+    # model
+}
+# 定义预测方法
+lgbm.pred <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    probs <- predict(modelFit$model, newdata %>% as.matrix())
+    factor(ifelse(probs >= 0.5, 2, 1),
+           labels = modelFit$factor_levels, levels = c(1, 2))
+    # ifelse(probs >= 0.5, modelFit$factor_levels[2], modelFit$factor_levels[1])
+    # ifelse(probs >= 0.5, 2, 1)
+}
+# 定义预测概率方法
+lgbm.prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    prob <- predict(modelFit$model, newdata %>% as.matrix())
+    data.frame(1 - prob, prob) %>% setNames(modelFit$factor_levels)
+        
+}
+# 模型从简单到复杂的参数排序
+lgbm.sort <- function(x) x[order(x$max_depth, x$num_leaves, x$num_iterations),]
+lgbm.levels <- function(x) x$factor_levels
+
+lgbm$fit <- lgbm.fit
+lgbm$predict <- lgbm.pred
+lgbm$prob <- lgbm.prob
+lgbm$sort <- lgbm.sort
+lgbm$levels <- lgbm.levels
+```
+
+Test caret
+
+```{r}
+df <- df.frac.covid
+df <- df %>%
+      mutate(across(where(is.numeric), z_score_standardize))
+indices <- 1
+
+df$Group <- factor(df$Group)
+
+# 分层抽样划分数据集
+# indices <- createDataPartition(df$Group, p = 0.7, list = FALSE)
+train_data <- df[-indices, ]
+test_data <- df[indices, ]
+
+set.seed(2025)
+control <- trainControl(method = "repeatedcv", number = 5, repeats = 5,
+                        classProbs = TRUE, summaryFunction = twoClassSummary,
+                        search = "grid")
+    
+model <- train(
+    x = train_data %>% select(-Sample, -Group) %>% as.matrix(), 
+    y = train_data$Group, 
+    method = lgbm, 
+    trControl = control, 
+    tuneGrid = lgbm.param_grid,
+    metric = "ROC"
+)
+
+pred <- predict(model,
+                newdata = test_data %>% select(-Sample, -Group) %>% as.matrix(),
+                type = "prob")[, 2]
+model$bestTune %>%
+    mutate(predictions = pred) %>%
+    select(predictions, everything())
+
+```
+
+## Start Modeling Classification
+
+Leave-one-out cross-validation
+
+```{r}
+z_score_standardize <- function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}
+# 生成AUC函数
+train_and_evaluate <- function(df, indices, method, caret_method = NULL, grid_len = 1) {
+    
+    df$Group <- factor(df$Group)
+
+    # 分层抽样划分数据集
+    train_data <- df[-indices, ]
+    test_data <- df[indices, ]
+    
+    train_features <- train_data %>% select(-Sample, -Group)
+    test_features <- test_data %>% select(-Sample, -Group)
+    
+    center <- colMeans(train_features)
+    scale <- apply(train_features, 2, sd)
+    
+    train_scaled <- as.data.frame(sweep(sweep(train_features, 2, center, "-"), 2, scale, "/"))
+    test_scaled <- as.data.frame(sweep(sweep(test_features, 2, center, "-"), 2, scale, "/"))
+    
+    set.seed(2025)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5,
+                            classProbs = TRUE, summaryFunction = twoClassSummary,
+                            search = "grid")
+    
+    # Method <- character()
+    param_grid <- NULL
+    if (method == "SVM") { # SVM
+        Method <- "svmLinearWeights"
+    } else if (method == "RF") { #  随机森林
+        Method <- "wsrf"
+    } else if (method == "XGBoost") {
+        Method <- "xgbTree"
+        len <- grid_len
+        param_grid <- expand.grid(
+            max_depth = seq(1, len), 
+            nrounds = floor((1:len) * 50), 
+            eta = c(0.3, 0.4), 
+            gamma = 0, 
+            colsample_bytree = c(0.6, 0.8), 
+            min_child_weight = c(1), 
+            subsample = seq(0.5, 1, length = len)
+            )
+    } else if (method == "LightGBM") {
+        Method <- lgbm
+    }
+    
+    if (!is.null(caret_method)) {
+        Method <- caret_method
+    }
+    
+    model <- train(
+          x = train_scaled,
+          y = train_data$Group,
+          method = Method,
+          trControl = control,
+          tuneGrid = param_grid,
+          metric = "ROC"
+        )
+    
+    pred <- predict(model,
+                    newdata = test_scaled,
+                    type = "prob")[, 2]
+    Method <- if (Method %>% is.character()) {
+        Method
+    } else {
+        "lightgbm"
+    }
+    model$bestTune %>% 
+        mutate(predictions = pred, method = Method, preg_group = levels(df$Group)[2]) %>%
+        select(predictions, preg_group, method, everything()) %>%
+        return()
+}
+
+# 分类器模型验证全流程
+leaveone_pred <- function(df, method, caret_method = NULL, name = NULL, grid_len = 1) {
+    # df <- df.frac.covid
+    # method <- "LightGBM"
+    
+    # 对数值列z-score
+    # df.zscore <- df %>%
+    #   mutate(across(where(is.numeric), z_score_standardize))
+    df <- df
+    method <- method
+    caret_method <- caret_method
+    grid_len <- grid_len
+    
+    res.list <- list()
+    # if (method == "LightGBM") {
+    #     for (i in 1:nrow(df)) {
+    # 
+    #         res.list[i] <- train_and_evaluate(df, i, method)
+    #     }
+    # } else {
+        cl <- makeCluster(detectCores() - 1)
+        clusterEvalQ(cl, {
+            library(dplyr)
+            library(caret)
+            library(lightgbm)
+        })
+        clusterExport(cl, c("train_and_evaluate", "lgbm"))
+    
+        # 并行计算预测结果
+        res.list <- parLapply(cl, 1:nrow(df), function(i) {
+            train_and_evaluate(df, i, method, caret_method, grid_len)
+        })
+        # 停止集群
+        stopCluster(cl)
+    # }
+    
+    res.df <- do.call(rbind, res.list)
+    res.df <- res.df %>% cbind(df)
+    
+    if (!is.null(name)) {
+        res.df %>% write_tsv(paste("model/df.model", name, method, "tsv", sep = "."))
+    }
+    res.df
+}
+
+leaveone_auc <- function(df, method) {
+    res.df <- leaveone_pred(df, method)
+    
+    roc_obj <- roc(df$Group, res.df$predictions)
+    auc(roc_obj)
+}
+
+# leaveone_auc(df.frac.covid, "LightGBM")
+```
+
+Calculate
+
+```{r}
+methods <- c("RF", "XGBoost")
+# methods <- c("LightGBM")
+df.auc <- data.frame()
+for (method in methods) {
+    tmp_df <- rbind(
+        data.frame(
+            Method = method,
+            Dataset = "COVID-19", 
+            Feature = "Cell Proportion",
+            AUC = df.frac.covid %>% leaveone_auc(method)
+        ),
+        data.frame(
+            Method = method,
+            Dataset = "COVID-19", 
+            Feature = "Differential Cell Proportion",
+            AUC = df.frac.covid.diff %>% leaveone_auc(method)
+        ),
+        data.frame(
+            Method = method,
+            Dataset = "HCC", 
+            Feature = "Cell Proportion",
+            AUC = df.frac.hcc %>% leaveone_auc(method)
+        ),
+        data.frame(
+            Method = method,
+            Dataset = "HCC", 
+            Feature = "Differential Cell Proportion",
+            AUC = df.frac.hcc.diff %>% leaveone_auc(method)
+        )
+    )
+    
+    df.auc <- df.auc %>% rbind(tmp_df)
+}
+
+df.auc
+saveRDS(df.auc, file = "df.auc2.RDS")
+# df.frac.covid %>% bootstrap_auc(method)
+
+
+```
+
+Plotting
+
+```{r}
+plot_auc.list <- list()
+for (dat in c("COVID-19", "HCC")) {
+    tmp_df <- df.auc %>% filter(Dataset == dat)
+    tmp_df$AUC_label <- label_number(accuracy = 0.0001)(tmp_df$AUC)
+    
+    plot_auc.list[[dat]] <- ggplot(tmp_df,
+                                   aes(x = Method, y = AUC, fill = Feature)) +
+        geom_col(position = position_dodge2(), width = 0.8) +
+        theme_bw() +
+        theme(legend.position = "top") +
+        geom_text(aes(label = AUC_label), 
+                  position = position_dodge2(width = 0.8), 
+                  vjust = -0.5,  # 调整标签位置
+                  size = 3) +
+        ylim(0 ,1)
+
+    
+    print(plot_auc.list[[dat]])
+    ggsave(paste0("plot_auc", dat, ".pdf"),
+           width = 5, height = 3)
+}
+
+
+```
+
+Calculate and save modeling results
+
+```{r}
+df.model.list <- list()
+
+df.model.list[["COVID-19"]][["SVM"]] <- 
+    leaveone_pred(df.frac.covid, "SVM", "svmLinearWeights", "COVID-19")
+df.model.list[["COVID-19_diff"]][["SVM"]] <- 
+    leaveone_pred(df.frac.covid.diff, "SVM", "svmRadial", "COVID-19_diff")
+df.model.list[["COVID-19"]][["RF"]] <- 
+    leaveone_pred(df.frac.covid, "RF", "rf", "COVID-19")
+df.model.list[["COVID-19_diff"]][["RF"]] <- 
+    leaveone_pred(df.frac.covid.diff, "RF", "wsrf", "COVID-19_diff")
+df.model.list[["COVID-19"]][["XGBoost"]] <- 
+    leaveone_pred(df.frac.covid, "XGBoost", "xgbTree", "COVID-19", 2)
+df.model.list[["COVID-19_diff"]][["XGBoost"]] <- 
+    leaveone_pred(df.frac.covid.diff, "XGBoost", "xgbTree", "COVID-19_diff", 2)
+df.model.list[["COVID-19"]][["LightGBM"]] <- 
+    leaveone_pred(df.frac.covid, "LightGBM", NULL, "COVID-19")
+df.model.list[["COVID-19_diff"]][["LightGBM"]] <- 
+    leaveone_pred(df.frac.covid.diff, "LightGBM", NULL, "COVID-19_diff")
+
+df.model.list[["HCC"]][["SVM"]] <- 
+    leaveone_pred(df.frac.hcc, "SVM", "svmRadialWeights", "HCC")
+df.model.list[["HCC_diff"]][["SVM"]] <- 
+    leaveone_pred(df.frac.hcc.diff, "SVM", "svmPoly", "HCC_diff")
+df.model.list[["HCC"]][["RF"]] <- 
+    leaveone_pred(df.frac.hcc, "RF", "rf", "HCC")
+df.model.list[["HCC_diff"]][["RF"]] <- 
+    leaveone_pred(df.frac.hcc.diff, "RF", "parRF", "HCC_diff")
+df.model.list[["HCC"]][["XGBoost"]] <- 
+    leaveone_pred(df.frac.hcc, "XGBoost", "xgbTree", "HCC", 2)
+df.model.list[["HCC_diff"]][["XGBoost"]] <- 
+    leaveone_pred(df.frac.hcc.diff, "XGBoost", "xgbTree", "HCC_diff", 3)
+df.model.list[["HCC"]][["LightGBM"]] <- 
+    leaveone_pred(df.frac.hcc, "LightGBM", NULL, "HCC")
+df.model.list[["HCC_diff"]][["LightGBM"]] <- 
+    leaveone_pred(df.frac.hcc.diff, "LightGBM", NULL, "HCC_diff")
+
+saveRDS(df.model.list, file = "model/df.model.list.RDS")
+```
+
+Draw ROC curves
+
+```{r}
+df.model.list <- readRDS("model/df.model.list.RDS")
+
+
+draw_ggroc <- function(roc.list, feature, position) {
+    ci.auc <- roc.list$SVM %>% ci.auc()
+    
+    ggroc(list(SVM = roc.list$SVM),
+      legacy.axes = TRUE, size = 1, alpha = 0.9) +
+        geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), 
+                     color="darkgrey", linetype="dashed") +
+        theme_bw() + 
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                SVM = "#1F78B4"
+                # RF = "#1F78B4",
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                SVM = paste0(
+                    "SVM AUC: ", round(ci.auc[2], 4), "\n(95% CI:", 
+                    round(ci.auc[1], 4), "-", round(ci.auc[3], 4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", roc.list$RF %>% auc() %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", roc.list$XGBoost %>% auc() %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", roc.list$LightGBM %>% auc() %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        # labs(color = paste("Feature:", feature))
+        labs(color = feature)
+}
+
+lapply(df.model.list[["COVID-19"]], function(df) roc(df$Group, df$predictions)) %>%
+    draw_ggroc("Cell fractions", c(0.6, 0.15)) -> p1.covid
+
+lapply(df.model.list[["HCC"]], function(df) roc(df$Group, df$predictions)) %>%
+    draw_ggroc("Cell fractions", c(0.6, 0.15)) -> p1.hcc
+
+
+p1.covid + p1.hcc
+
+
+# lapply(df.model.list[["COVID-19"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Cell fractions", c(0.7, 0.22)) -> p1 
+# lapply(df.model.list[["COVID-19_diff"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Differential cell fractions", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot_roc_covid.pdf", width = 8, height = 4)
+# 
+# lapply(df.model.list[["HCC"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Cell fractions", c(0.7, 0.22)) -> p1 
+# lapply(df.model.list[["HCC_diff"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Differential cell fractions", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot_roc_hcc.pdf", width = 8, height = 4)
+
+```
+
+PRROC plot
+
+```{r}
+df.model.list <- readRDS("model/df.model.list.RDS")
+draw_prroc <- function(df_list, class1, class0, feature, position) {
+    auc_list <- list()
+    ci_list <- list()
+    df_curve <- data.frame()
+    
+    # methods <- c("SVM", "RF", "XGBoost", "LightGBM")
+    methods <- c("SVM")
+    # me <- "SVM"
+    for (me in methods) {
+        df_tmp <- df_list[[me]]
+        yintercept = sum(df_tmp$Group == class0) / nrow(df_tmp)
+        
+        if (df_tmp[df_tmp$Group == class0, "predictions"] %>% mean() < 
+            df_tmp[df_tmp$Group == class1, "predictions"] %>% mean())
+            df_tmp$predictions <- 1 - df_tmp$predictions
+        
+        pr_curve1 <- pr.curve(scores.class0 = df_tmp$predictions[df_tmp$Group == class0],
+                     scores.class1 = df_tmp$predictions[df_tmp$Group == class1], 
+                     curve = TRUE)
+        
+        auc_list[[me]] <- pr_curve1$auc.integral
+        
+        
+        # 95% CI
+        B <- 2000
+        list.auprc <- numeric(B)
+        for (b in 1: B) {
+            df.sub <- df_tmp %>% group_by("Group") %>% 
+                sample_n(size = n(), replace = TRUE)
+            
+            res <- pr.curve(scores.class0 = df.sub$predictions[df.sub$Group == class0],
+                     scores.class1 = df.sub$predictions[df.sub$Group == class1], 
+                     curve = FALSE)
+            
+            list.auprc[b] <- res$auc.integral
+        }
+        
+        ci <- quantile(list.auprc, probs = c(0.025, 0.975), na.rm = TRUE)
+        ci_list[[me]] <- ci
+        
+        
+        df_curve <- pr_curve1$curve %>% as.data.frame() %>% 
+            setNames(c("recall", "precision", "cutoff")) %>%
+            mutate(cutoff = NULL, "method" = factor(me, methods)) %>%
+            rbind(df_curve)
+    }
+    
+    df_curve %>% arrange(desc(row_number())) %>%
+        ggplot(aes(x = recall, y = precision, color = method)) +
+        geom_line(size = 1, alpha = 0.9) +
+        theme_bw() +
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                SVM = "#1F78B4"
+                # RF = "#1F78B4",
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                SVM = paste0(
+                    "SVM AUC: ", auc_list[["SVM"]] %>% round(4), "\n(95% CI: ", 
+                    ci_list[["SVM"]][1] %>% round(4), "-", 
+                    ci_list[["SVM"]][2] %>% round(4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", auc_list[["RF"]] %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", auc_list[["XGBoost"]] %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", auc_list[["LightGBM"]] %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        # ylim(c(0, 1)) +
+        scale_y_continuous(limits = c(0, 1)) +
+        labs(color = feature) +
+        geom_segment(aes(x = 0, xend = 1, y = yintercept, yend = yintercept), 
+                     color="darkgrey", linetype="dashed")
+}
+
+# p1 <- df.model.list[["COVID-19"]] %>% 
+#     draw_prroc("Severe", "Mild", "Cell fractions", c(0.7, 0.22))
+# p2 <- df.model.list[["COVID-19_diff"]] %>% 
+#     draw_prroc("Severe", "Mild", "Differential cell fractions", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot_prroc_covid.pdf", width = 8, height = 4)
+# 
+# p1 <- df.model.list[["HCC"]] %>% 
+#     draw_prroc("HCC", "NC", "Cell fractions", c(0.7, 0.22))
+# p2 <- df.model.list[["HCC_diff"]] %>% 
+#     draw_prroc("HCC", "NC", "Differential cell fractions", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot_prroc_hcc.pdf", width = 8, height = 4)
+
+
+p2.covid <- df.model.list[["COVID-19"]] %>%
+    draw_prroc("Mild", "Severe", "Cell fractions", c(0.6, 0.15))
+p2.hcc <- df.model.list[["HCC"]] %>%
+    draw_prroc("NC", "HCC", "Cell fractions", c(0.6, 0.15))
+
+p1.covid + p2.covid
+ggsave(filename = "plot_pr+roc_covid.pdf", width = 8, height = 4)
+
+p1.hcc + p2.hcc
+ggsave(filename = "plot_pr+roc_hcc.pdf", width = 8, height = 4)
+```
+
+## Trace back to full spectrum, pie chart display
+
+First import simplified names for each cell type
+
+```{r}
+df.cell_type <- read_excel("~/Desktop/Decon_test/Fig_Table/Table_Data/Table S1.xlsx", 
+    sheet = "Adult cell merge and rename", 
+    skip = 1) %>% select(1, 2) %>% 
+    setNames(c("Simplified_cell_types", "Cell_types"))
+df.cell_type %>% head()
+```
+
+```{r}
+# df.frac.covid -> df
+# 只展示前20个
+get_mean_frac <- function(df, group, n_top_cell = 20) {
+    df_pie <- df %>% filter(Group == group) %>% select(-Sample, -Group) %>%
+        colMeans() %>% as.data.frame() %>% rownames_to_column("Cell_types")
+    colnames(df_pie)[2] <- "Proportion"
+    df_pie <- df_pie %>%
+      arrange(desc(Proportion))
+    
+    if (n_top_cell > 0) {
+      df_pie <- df_pie %>%
+      arrange(desc(Proportion)) %>% 
+      mutate(Rank = row_number()) %>% 
+      mutate(Cell_types = ifelse(Rank > n_top_cell, "Others", Cell_types)) %>% 
+      group_by(Cell_types) %>% 
+      summarise(Proportion = sum(Proportion)) %>%  
+      ungroup() %>%
+          arrange(Cell_types == "Others", desc(Proportion))
+    }
+    
+    df_pie
+}
+# 只展示大于0.005的
+get_mean_frac2 <- function(df, group, thres_frac = 0.003) {
+    df_pie <- df %>% filter(Group == group) %>% select(-Sample, -Group) %>%
+        colMeans() %>% as.data.frame() %>% rownames_to_column("Cell_types")
+    colnames(df_pie)[2] <- "Proportion"
+    df_pie <- df_pie %>%
+      arrange(desc(Proportion))
+    
+    if (thres_frac > 0) {
+      df_pie <- df_pie %>%
+      arrange(desc(Proportion)) %>% 
+      mutate(Rank = row_number()) %>% 
+      mutate(Cell_types = ifelse(Proportion < thres_frac, "Others", Cell_types)) %>% 
+      group_by(Cell_types) %>% 
+      summarise(Proportion = sum(Proportion)) %>%  
+      ungroup() %>%
+          arrange(Cell_types == "Others", desc(Proportion))
+    }
+    
+    df_pie
+}
+
+# df.frac.covid %>% get_mean_frac("Mild") -> df_pie
+```
+
+Save as CSV for importing into Excel for plotting
+
+```{r}
+df.frac.covid %>% get_mean_frac2("Mild", 0) %>% write.csv("pie/df.mean_frac.covid.mild.csv")
+df.frac.covid %>% get_mean_frac2("Severe", 0) %>% write.csv("pie/df.mean_frac.covid.severe.csv")
+df.frac.hcc %>% get_mean_frac2("HCC", 0) %>% write.csv("pie/df.mean_frac.hcc.hcc.csv")
+df.frac.hcc %>% get_mean_frac2("NC", 0) %>% write.csv("pie/df.mean_frac.hcc.nc.csv")
+```
+
+Pie chart
+
+```{r}
+# tmp <- df.frac.covid %>% get_mean_frac("Severe", 11)
+
+draw_pie <- function(tmp) {
+    tmp <- tmp %>%
+        mutate(Proportion_percent = scales::percent(Proportion, accuracy = 0.01)) %>% 
+        left_join(df.cell_type, by = "Cell_types") %>%
+        mutate(Cell_types = if_else(Simplified_cell_types %>% is.na(), 
+                                    Cell_types, Simplified_cell_types) )
+    tmp$Cell_types <- factor(tmp$Cell_types, tmp$Cell_types)
+    
+    legend_labels <- paste0(tmp$Cell_types, " (", tmp$Proportion_percent, ")")
+    colors <- brewer.pal(length(unique(tmp$Cell_types)), "Paired")
+    
+    ggplot(tmp, aes(x = "", y = Proportion, fill = Cell_types)) +
+        geom_bar(stat = "identity",
+                 width = 1,
+                 color = "white") +
+        coord_polar("y", start = -2.3, direction = -1) +
+        theme_void() +
+        scale_fill_manual(values = setNames(colors, tmp$Cell_types), 
+                          labels = legend_labels) +
+        guides(fill = guide_legend(title = "Cell types (Proportion)"))
+}
+
+```
+
+```{r}
+plot_pie.covid.mild <- df.frac.covid %>% 
+    get_mean_frac("Mild", 11) %>% draw_pie()
+plot_pie.covid.severe <- df.frac.covid %>% 
+    get_mean_frac("Severe", 11) %>% draw_pie()
+plot_pie.hcc.hcc <- df.frac.hcc %>% 
+    get_mean_frac("HCC", 11) %>% draw_pie()
+plot_pie.hcc.nc <- df.frac.hcc %>% 
+    get_mean_frac("NC", 11) %>% draw_pie()
+
+width <- 6
+height <- 4
+units <- "in" # 单位（可选 "in", "cm", "mm"）
+
+ggsave(
+    filename = "pie/plot_pie.covid.mild.pdf",
+    plot = plot_pie.covid.mild,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = "pie/plot_pie.covid.severe.pdf",
+    plot = plot_pie.covid.severe,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = "pie/plot_pie.hcc.hcc.pdf",
+    plot = plot_pie.hcc.hcc,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = "pie/plot_pie.hcc.nc.pdf",
+    plot = plot_pie.hcc.nc,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+```
+
+## Differential Cell Fraction Boxplot
+
+List all cell types to be plotted
+
+```{r}
+list.hcc.box <- c("hepatocyte", "endothelial_cell", "neutrophil", "basophil", "plasmablast",
+                  "plasma_cell", "mature_conventional_dendritic_cell", "mast_cell",
+                  "macrophage", "t_cell", "platelet", "club_cell__type_i_pneumocyte",
+                  "pulmonary_ionocyte", "ciliated_cell__lung_ciliated_cell", "hematopoietic")
+list.covid.box <- c("type_ii_pneumocyte", "neutrophil", "monocyte", "t_cell", "nk_cell", 
+                    "platelet")
+```
+
+Start drawing
+
+```{r}
+draw_diff_boxplot <- function(df, list.cell, n_row = 2) {
+    # list.cell <- list.covid.box
+    # df <- df.frac.covid
+    # df.test <- df.frac.wilcox.covid
+    # df.test <- df.test %>% 
+    #     dplyr::rename(Cell_types = "Key") %>%
+    #     left_join(df.cell_type, by = "Cell_types") %>%
+    #     mutate(Sign = case_when(
+    #         p_wilcox < 0.001 ~ "***",
+    #         p_wilcox < 0.01 ~ "**",
+    #         p_wilcox < 0.05 ~ "*",
+    #         TRUE ~ ""
+    #     ))
+    df.show <- df.cell_type %>%
+        mutate(Simplified_cell_types = case_when(
+            Simplified_cell_types == "club cell and type i pneumocyte" ~
+                "club cell and\ntype i pneumocyte",
+            Simplified_cell_types == "pulmonary ionocyte" ~
+                "pulmonary\nionocyte",
+            Simplified_cell_types == "type ii pneumocyte" ~
+                "type ii\npneumocyte",
+            TRUE ~ Simplified_cell_types
+        ))
+    df <- df %>% select(-Sample) %>%
+        gather(key = "Cell_types", value = "Fractions", -Group) %>%
+        filter(Cell_types %in% list.cell) %>%
+        left_join(df.show, by = "Cell_types")
+    list.simp_cell <- data.frame(Cell_types = list.cell) %>% 
+        left_join(df.show, by = "Cell_types") %>%
+        pull("Simplified_cell_types")
+    
+    if ("HCC" %in% df$Group)
+        df <- df %>% mutate(Group = factor(Group, c("NC", "HCC")))
+    
+    df %>% 
+        mutate(Simplified_cell_types = factor(Simplified_cell_types, 
+                                              levels = list.simp_cell)) %>%
+        ggplot(aes(x = Simplified_cell_types, y = Fractions, fill = Group)) +
+        facet_wrap(~ Simplified_cell_types, nrow = n_row, scales = "free") +  
+        geom_boxplot(outliers = FALSE) + 
+        labs(x = "") +
+        theme_bw() +
+        theme(
+            axis.title.x = element_blank(),    # 隐藏 x 轴标题
+            axis.text.x = element_blank(),     # 隐藏 x 轴标签文字
+            axis.ticks.x = element_blank(),     # 隐藏 x 轴刻度线
+            axis.text.y = element_text(angle = 50, hjust = 1),  # 向下倾斜 y 轴标签
+            panel.spacing.x = unit(0, "in")
+        ) +
+        scale_fill_brewer(palette = "Paired")
+}
+
+
+p.box.hcc <- draw_diff_boxplot(df.frac.hcc, list.hcc.box, 3)
+p.box.hcc
+ggsave("df_diff/box_hcc.pdf", height = 4.5, width = 8.5)
+p.box.covid <- draw_diff_boxplot(df.frac.covid, list.covid.box, 2)
+p.box.covid
+ggsave("df_diff/box_covid.pdf", height = 3, width = 5)
+```

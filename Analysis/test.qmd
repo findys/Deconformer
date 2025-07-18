@@ -1,0 +1,613 @@
+---
+title: "Test Deconformer"
+format: html
+editor: visual
+---
+
+## Initialization
+
+```{r}
+setwd("/Users/yukisetsuna/Desktop/Decon_test")
+rm(list = ls())
+library(tidyverse)
+library(ggpubr)
+
+```
+
+```{r}
+sink("test2.sessionInfo.txt")
+sessionInfo()
+sink()
+```
+
+## Cell detection analysis
+
+Import data
+
+```{r}
+gene_detection_results <- read_delim("gene_detection_results.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    col_types = cols(dropout = col_character()), 
+    trim_ws = TRUE)
+```
+
+Boxplot
+
+```{r}
+gene_detection_results %>% 
+    ggplot(aes(y = geneNOs, x = dropout, fill = sequencing)) +
+    geom_boxplot(outlier.size = .5) +
+    scale_fill_brewer(palette = "Paired") +
+    theme_bw() +
+    labs(x = "Dropout", y = "Numbers of detected genes", fill = "Data")
+
+ggsave("gene_detection_results.pdf", height = 4, width = 6)
+```
+
+Statistical tests
+
+```{r}
+# 创建一个空表来存储结果
+results <- data.frame(
+    dropout = character(),
+    p_value = numeric()
+)
+# 循环每个 dropout 值
+for (dr in unique(gene_detection_results$dropout)) {
+    group1 <- gene_detection_results %>%
+        filter(sequencing == "10x" & dropout == dr) %>%
+        pull(geneNOs)
+    group2 <- gene_detection_results %>%
+        filter(sequencing == "smartseq2" & dropout == dr) %>%
+        pull(geneNOs)
+
+    test_result <- try(wilcox.test(group1, group2), silent = TRUE)
+
+    p_val <- test_result$p.value
+
+    results <- add_row(results, dropout = dr, p_value = p_val)
+}
+# 显示结果
+print(results)
+```
+
+## Import cell fractions
+
+```{r}
+# 最多读取前多少个模拟样本的数据
+n_sample_max <- 100
+n_sample_max_CBx <- 100
+```
+
+```{r}
+
+simu_frac.df <- read_delim(
+    "Fractions2/simu_10x.cell_fractions.tsv",
+    delim = "\t",
+    escape_double = FALSE,
+    trim_ws = TRUE,
+    show_col_types = FALSE
+) %>%
+    column_to_rownames("Sample") %>%
+    filter(row_number() <= n_sample_max)
+
+# simu_frac_smartseq2.df <- read_delim(
+#     "Fractions2/simu_smartseq2.cell_fractions.tsv",
+#     delim = "\t",
+#     escape_double = FALSE,
+#     trim_ws = TRUE,
+#     show_col_types = FALSE
+# ) %>%
+#     column_to_rownames("Sample") %>%
+#     filter(row_number() <= n_sample_max)
+
+simu_frac.df <- simu_frac.df %>% select(order(colnames(simu_frac.df)))
+# simu_frac_smartseq2.df <- simu_frac_smartseq2.df %>% 
+#     select(order(colnames(simu_frac_smartseq2.df)))
+```
+
+```{r}
+# Gene-Deconformer: 60w_epoch35_gene3k
+# dropout <- c(as.character(0: 5), "smartseq2")
+dropout <- as.character(0: 5)
+# dropout <- c(as.character(0: 9), "95")
+# method <- c("Gene-Deconformer_60w_epoch35_gene3k", 
+#             "Gene-Deconformer_60w_epoch40_gene2k")
+method <- c("MuSiC", "BayesPrism", "UCD", "Gene-Deconformer",
+            "CIBERSORT", "Scaden", "Deconformer")
+# dropout <- as.character(0: 0)
+# method <- c("TAPE_10w_128b_512e",
+#             "TAPE_10w_128b_128e", "TAPE_10w_128b_32e", "TAPE_5k_128b_128e",
+#             "TAPE_40w_128b_20e", "TAPE_40w_128b_128e", "TAPE_40w_128b_128e_1e-5lr")
+```
+
+```{r}
+frac.df <- list()
+
+for (me in method) {
+    frac.df[[me]] <- list()
+    for (do in dropout) {
+        tmp <- read_delim(
+            paste0(
+                "Fractions2/",
+                me,
+                ".cell_fractions_",
+                do,
+                ".tsv"
+            ),
+            delim = "\t",
+            escape_double = FALSE,
+            trim_ws = TRUE,
+            show_col_types = FALSE
+        ) %>%
+            column_to_rownames("Sample") %>%
+            filter(row_number() <= n_sample_max)
+        
+        frac.df[[me]][[do]] <- tmp %>% select(order(colnames(tmp)))
+    }
+}
+
+names(frac.df)
+```
+
+## Remove non-cell fraction columns in CIBERSORT
+
+```{r}
+
+for (do in dropout) {
+    tmp <- frac.df[["CIBERSORT"]][[do]]
+    tmp <- tmp %>% select(-c("P-value", "Correlation", "RMSE"))
+    frac.df[["CIBERSORT"]][[do]] <- tmp
+}
+```
+
+## Process UCD cell types
+
+```{r}
+library(jsonlite)
+ucd_map <- fromJSON("cell_ucd_mapping.json")
+
+ucd_map %>% names() %>% length()
+ucd_map
+```
+
+Check if cell types are correct
+
+```{r}
+ucd_types <- ucd_map %>% names()
+ucd_types <- gsub("[^a-zA-Z0-9]", "_", ucd_types)
+type_no_exist <- c()
+type_no_mapped <- frac.df[["MuSiC"]][["1"]] %>% colnames()
+# ucd_types
+for (ty in ucd_types) {
+  for (do in dropout) {
+    if (!(ty %in% (frac.df[["MuSiC"]][[do]] %>% colnames()))) {
+      print(paste0(ty, " is not in frac.df$MuSiC$", do))
+      if (!(ty %in% type_no_exist))
+        type_no_exist <- c(type_no_exist, ty)
+    }
+    
+    type_no_mapped <- type_no_mapped[type_no_mapped != ty]
+  }
+}
+
+print("type_no_exist: ")
+cat(type_no_exist, sep = "\n")
+print("type_no_mapped: ")
+cat(type_no_mapped, sep = "\n")
+```
+
+```{r}
+ucd_types_map <- ucd_map %>% unlist()
+type_map_no_exist <- c()
+# ucd_types
+for (ty in ucd_types_map) {
+  for (do in dropout) {
+    if (!(ty %in% (frac.df[["UCD"]][[do]] %>% colnames()))) {
+      print(paste0(ty, " is not in frac.df$UCD$", do))
+      if (!(ty %in% type_map_no_exist))
+        type_map_no_exist <- c(type_map_no_exist, ty)
+    }
+      
+  }
+}
+
+type_map_no_exist
+```
+
+Map UCD cell types to TSP cell types
+
+```{r}
+frac.df[["UCD_mapping"]] <- list()
+for (do in dropout) {
+  tmp <- data.frame()
+  for (tsp_type in (ucd_map %>% names())) {
+    if (ucd_map[[tsp_type]] %>% is.null()) {
+      next
+    }
+    col <- frac.df[["UCD"]][[do]] %>% 
+      select(ucd_map[[tsp_type]]) %>% rowSums() %>% data.frame()
+    colnames(col) <- gsub("[^a-zA-Z0-9]", "_", tsp_type)
+    
+    if (ncol(tmp)) {
+      tmp <- tmp %>% cbind(data.frame(col))
+    }else {
+      tmp <- cbind(data.frame(col))
+    }
+  }
+  
+  for (i in 1: nrow(tmp)) {
+    tmp[i, ] <- tmp[i, ] / sum(tmp[i, ])
+  }
+  
+  # colnames(tmp) <- gsub("[^a-zA-Z0-9]", "_", colnames(tmp))
+  
+  frac.df[["UCD_mapping"]][[do]] <- tmp
+}
+
+method <- method %>% union("UCD_mapping")
+```
+
+## Calculate CCC (Concordance Correlation Coefficient)
+
+```{r}
+# ccc.df <- data.frame(Sample, CCC, Method, Dropout)
+ccc.df <- data.frame()
+for (me in method) {
+    if (me == "UCD")
+        # UCD × UCD_mapping √
+        next
+    for (do in dropout) {
+        for (i in 1:nrow(simu_frac.df)) {
+            if (me == "CIBERSORT" && i > n_sample_max_CBx) {
+                break
+            }
+            
+            x <- frac.df[[me]][[do]][i, ] %>% unlist()
+            if (do != "smartseq2") {
+                y <- simu_frac.df[i, ] %>% unlist()
+            } else {
+                y <- simu_frac_smartseq2.df[i, ] %>% unlist()
+            }
+            
+            common_types <- intersect(names(x), names(y))
+            x <- x[common_types]
+            y <- y[common_types]
+            
+            tmp <- data.frame(
+                CCC = (2 * cov(x, y)) / (var(x) + var(y) + (mean(x) - mean(y)) ^ 2),
+                RMSE = sqrt(mean((x - y) ^ 2)),
+                R_Pearson = cor(x, y),
+                Sample = rownames(simu_frac.df)[i],
+                Method = me,
+                Dropout = ifelse(do != "smartseq2", paste0("0.", do), "Smart-seq2")
+            )
+            
+            ccc.df <- ccc.df %>% rbind(tmp)
+        }
+
+    }
+}
+
+ccc.df
+ccc.df %>% write_csv("ccc.df.csv")
+```
+
+## Plotting
+
+Ensure column names are consistent across methods
+
+```{r}
+test <- frac.df[[1]][[1]] %>% colnames()
+for (me in method) {
+  for (do in dropout) {
+    if (!identical(test, frac.df[[me]][[do]] %>% colnames()))
+      print(paste0("Method: ", me, " Dropout: ", do))
+  }
+}
+print("Done!!!")
+```
+
+```{r}
+# me_igore <- c("Gene-Deconformer_60w", "Gene-Deconformer_60w_epoch40", 
+#               "Gene-Deconformer_4w4w_epoch40_gene2k",
+#               "Gene-Deconformer_4w4w_epoch40_gene2k5",
+#               "Gene-Deconformer_4w4w_epoch40_gene3k",
+#               "Gene-Deconformer_60w_epoch40_gene2k",
+#               "Gene-Deconformer_60w20w_epoch24_gene3k",
+#               "Gene-Deconformer_60w20w_epoch35_gene3k",
+#               "Gene-Deconformer_60w_epoch45_gene3k5")
+# # me_select <- c("Gene-Deconformer", "Deconformer", me_igore)
+# me_select <- c("Deconformer", 
+#                # "Gene-Deconformer_60w_epoch40_gene2k",
+#                # "Gene-Deconformer_60w_epoch45_gene3k5",
+#                # "Gene-Deconformer_60w20w_epoch24_gene3k",
+#                "Gene-Deconformer_60w_epoch35_gene3k",
+#                "Scaden")
+```
+
+Generate plots for CCC, RMSE, and Pearson correlation
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = CCC, fill = Dropout)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = RMSE, fill = Dropout)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = R_Pearson, fill = Dropout)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+## Figure preparation
+
+Order and naming of methods
+
+```{r}
+fig_method_level <- c(
+    decon = "Deconformer\n-pathway",
+    gene = "Deconformer\n-gene",
+    scd = "Scaden",
+    cbx = "CIBERSORT",
+    music = "MuSiC",
+    bayes = "BayesPrism",
+    ucd = "UCD",
+    tape = "TAPE"
+)
+fig_df <- ccc.df %>%
+    mutate(fig_method = case_when(
+        Method == "Deconformer" ~ fig_method_level["decon"],
+        Method == "Gene-Deconformer" ~ fig_method_level["gene"],
+        Method == "CIBERSORT" ~ fig_method_level["cbx"],
+        Method == "Scaden" ~ fig_method_level["scd"],
+        Method == "BayesPrism" ~ fig_method_level["bayes"],
+        Method == "UCD_mapping" ~ fig_method_level["ucd"],
+        Method == "MuSiC" ~ fig_method_level["music"],
+        # Method == "TAPE" ~ fig_method_level["tape"],
+    )) 
+
+fig_df.smartseq2 <- fig_df %>%
+    filter(!is.na(fig_method), Dropout == "Smart-seq2")
+fig_df.smartseq2$fig_method <- 
+    factor(fig_df.smartseq2$fig_method, levels = fig_method_level)
+
+fig_df <- fig_df %>%
+    filter(!is.na(fig_method), Dropout != "Smart-seq2")
+fig_df$fig_method <- factor(fig_df$fig_method, levels = fig_method_level)
+fig_df
+
+
+```
+
+Colors and transparency settings
+
+```{r}
+library(scales)
+library(RColorBrewer)
+
+colors <- c("black",
+            "red",
+            "yellow",
+            "green",
+            "blue",
+            "orange",
+            "purple",
+            "grey")
+colors <- brewer.pal(length(colors), "Paired")
+yulong_palette <- c(
+    "#c5b0d5",
+    "#ff9896",
+    "#1f77b4",
+    "#d62728",
+    "#8c564b",
+    "#e377c2",
+    "#7f7f7f",
+    "#bcbd22"
+)
+colors <- yulong_palette
+
+fig_df <- fig_df %>%
+    mutate(Color = case_when(
+        fig_method == fig_method_level["decon"] ~ colors[1],
+        fig_method == fig_method_level["gene"] ~ colors[2],
+        fig_method == fig_method_level["cbx"] ~ colors[3],
+        fig_method == fig_method_level["scd"] ~ colors[4],
+        fig_method == fig_method_level["bayes"] ~ colors[5],
+        fig_method == fig_method_level["ucd"] ~ colors[6],
+        fig_method == fig_method_level["music"] ~ colors[7],
+        # fig_method == fig_method_level["tape"] ~ colors[8],
+    )) %>%
+    mutate(line_color = alpha("black", 0.8)) %>%
+    mutate(Alpha = exp(-2 * as.numeric(Dropout))) %>%
+    mutate(Color_alpha = alpha(Color, Alpha),
+           line_color_alpha = alpha(line_color, Alpha))
+fig_df.smartseq2 <- fig_df.smartseq2 %>%
+    mutate(Color = case_when(
+        fig_method == fig_method_level["decon"] ~ colors[1],
+        fig_method == fig_method_level["gene"] ~ colors[2],
+        fig_method == fig_method_level["cbx"] ~ colors[3],
+        fig_method == fig_method_level["scd"] ~ colors[4],
+        fig_method == fig_method_level["bayes"] ~ colors[5],
+        fig_method == fig_method_level["ucd"] ~ colors[6],
+        fig_method == fig_method_level["music"] ~ colors[7],
+        # fig_method == fig_method_level["tape"] ~ colors[8],
+    )) %>%
+    mutate(line_color = alpha("black", 0.8))
+
+fig_df$Color_alpha <- sapply(fig_df$Color_alpha, function(col) {
+  if (nchar(col) == 7) {  # 如果颜色长度为 7，表示透明度被省略
+    paste0(col, "FF")     # 补全透明度为 FF
+  } else {
+    col  # 保持原样
+  }
+})
+fig_df$line_color_alpha <- sapply(fig_df$line_color_alpha, function(col) {
+  if (nchar(col) == 7) {  # 如果颜色长度为 7，表示透明度被省略
+    paste0(col, "FF")     # 补全透明度为 FF
+  } else {
+    col  # 保持原样
+  }
+})
+
+colors_alpha <- fig_df$Color_alpha %>% unique() # 按照透明度从大到小排列
+sorted_colors_alpha <- colors_alpha[order(sapply(colors_alpha, function(col) {
+  # 提取透明度部分（最后两位）
+  alpha <- substr(col, 8, 9)
+  # 将透明度从 16 进制转换为 10 进制
+  as.numeric(as.hexmode(alpha))
+}), decreasing = TRUE)]
+fig_df$Color_alpha <- factor(fig_df$Color_alpha, levels = sorted_colors_alpha)
+
+fig_df
+```
+
+CCC plot
+
+```{r}
+fig_ccc <- fig_df %>%
+    ggplot(aes(x = fig_method, y = CCC, 
+               fill = Color_alpha, color = line_color_alpha)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    scale_color_identity() +
+    scale_fill_identity() +
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "Concordance corr. coeff.", color = NULL)
+
+fig_ccc
+```
+
+RMSE plot
+
+```{r}
+fig_rmse <- fig_df %>%
+    ggplot(aes(x = fig_method, y = RMSE, 
+               fill = Color_alpha, color = line_color_alpha)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    scale_color_identity() +
+    scale_fill_identity() +
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "RMSE", color = NULL)
+
+fig_rmse
+```
+
+Pearson correlation plot
+
+```{r}
+fig_r <- fig_df %>%
+    ggplot(aes(x = fig_method, y = R_Pearson, 
+               fill = Color_alpha, color = line_color_alpha)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    scale_color_identity() +
+    scale_fill_identity() +
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "Pearson corr. coeff.", color = NULL)
+
+fig_r
+```
+
+Legend creation
+
+```{r}
+# # TODO:
+# library(cowplot)
+# 
+# guide_fig_df <- fig_df %>% filter(fig_method == "Deconformer") 
+# guide_breaks <- sorted_colors_alpha %>% intersect(
+#     guide_fig_df %>% pull("Color_alpha") %>% unique()
+#     )
+# names(guide_breaks) <- c("0.0", "0.1", "0.2", "0.3", "0.4", "0.5")
+# 
+# fig_guide <- fig_df %>%
+#     filter(fig_method == "Deconformer") %>%
+#     ggplot(aes(x = fig_method, y = R_Pearson, color = Dropout)) +
+#     geom_boxplot(notch = FALSE,
+#                  outlier.shape = 21,
+#                  outlier.size = 2) +
+#     scale_color_manual(values = guide_breaks) +
+#     theme_bw() +
+#     labs(color = "Dropout")
+# 
+# fig_guide
+# # fig_guide <- cowplot::get_legend(fig_guide)
+# # cowplot::plot_grid(fig_guide)
+```
+
+Export plots as PDF
+
+```{r}
+width <- 6
+height <- 4
+units <- "in" # 单位（可选 "in", "cm", "mm"）
+
+ggsave(
+    filename = "fig_ccc.pdf",
+    plot = fig_ccc,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = "fig_rmse.pdf",
+    plot = fig_rmse,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = "fig_r.pdf",
+    plot = fig_r,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+
+# 图例
+# ggsave("fig_legend.pdf", fig_guide, width = 4, height = 2, units = "in")
+```

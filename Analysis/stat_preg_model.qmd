@@ -1,0 +1,3626 @@
+---
+title: "Statistical Analysis of Pregnancy Cell Fraction Models"
+format: html
+editor: visual
+---
+
+This document presents the statistical analysis of cell fraction models derived from maternal blood samples collected during pregnancy. The data comes primarily from two sources:
+
+1.  **Shenzhen Maternity and Child Healthcare Hospital (SZMCHH)** dataset, specifically W06 cohort — a subset of the SZMCHH cohort.
+2.  **PE Dataset** — the Munchel et al. (PE) dataset.
+
+All datasets are analyzed with a focus on changes in cell composition across gestational weeks, correlation with clinical features (such as OGTT), and machine learning modeling to distinguish between GDM and healthy controls.
+
+Due to ethical issues, many of the original data related to clinical indicators in SZMCHH cannot be disclosed in this code, corresponding to variables named with `cli`. If you need to analyze or verify, please contact the author of the article.
+
+```{r}
+rm(list = ls())
+setwd("/Users/yukisetsuna/Desktop/Decon_test/real_data/pregnant_model")
+# knitr::opts_knit$set(root.dir = "/Users/yukisetsuna/Desktop/Decon_test/real_data")
+model_select <- "model1"
+
+library(tidyverse)
+library(readxl)
+library(RColorBrewer)
+library(ggpubr)
+library(glmnet)
+# library(randomForest)
+library(caret)
+# library(e1071)
+library(pROC)
+library(PRROC)
+library(parallel)
+library(scales)
+library(pheatmap)
+library(lightgbm)
+library(patchwork)
+library(future.apply)
+library(Matrix)
+library(hrbrthemes)
+library(viridis)
+library(leaps)
+library(gghalves)
+library(ggbeeswarm)
+# library(ggalluvial)
+```
+
+## Import Simplified Cell Type Names
+
+We first import a simplified version of the cell type labels for better interpretability in downstream visualizations and analysis.
+
+```{r}
+#| eval: false
+#| include: false
+df.cell_type <- readxl::read_excel("~/Desktop/Decon_test/Fig_Table/Table_Data/Table S1 TSP_cell_types.xlsx", 
+    sheet = "pregnancy cell merge and rename", 
+    skip = 1) %>% select(1, 2) %>% 
+    setNames(c("Simplified_cell_types", "Cell_type"))
+df.cell_type %>% head()
+```
+
+## Data from Shenzhen Maternity and Child Healthcare Hospital (SZMCHH)
+
+### Import Proportional Data
+
+We load the inferred cell-type proportions obtained via deconvolution methods. These proportions were generated using Deconformer and represent tissue- or organ-specific contributions in maternal plasma RNA.
+
+The data includes:
+
+-   `W06.all_mlncRNA_Count.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv`
+-   `W22.all_mlncRNA_Count.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv`
+
+These files are processed and filtered to retain only relevant samples.
+
+```{r}
+#| eval: false
+#| include: false
+df.W06 <- read_delim("model1/W06.all_mlncRNA_Count.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE) %>%
+    mutate(Data = "W06")
+colnames(df.W06)[1] <- "Sample"
+# df.W06 <- df.W06 %>% column_to_rownames("Sample")
+df.W22 <- read_delim("model1/W22.all_mlncRNA_Count.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE) %>%
+    mutate(Data = "W22")
+colnames(df.W22)[1] <- "Sample"
+# df.W22 <- df.W22 %>% column_to_rownames("Sample")
+
+# Remove Overlapping Families Between W06 and W22 Cohorts
+# To ensure independence between datasets, we filter out any family identifiers that appear in both cohorts.
+df.W06 <- df.W06 %>% 
+    separate(col = Sample, remove = FALSE, into = c("S1", "S2", "S3", "family"), sep = "-")
+df.W22 <- df.W22 %>% 
+    separate(col = Sample, remove = FALSE, into = c("S1", "S2", "S3", "family"), sep = "-")
+
+df.W06 <- df.W06 %>% filter(!(family %in% df.W22$family)) %>% select(-S1, -S2, -S3, -family)
+df.W22 <- df.W22 %>% select(-S1, -S2, -S3, -family)
+
+df.W <- rbind(df.W06, df.W22) %>%
+    select(Sample, Data, everything()) %>% 
+    separate(Sample, c("Info", "Source", "Pregnancy", "Family"), sep = "-", remove = FALSE) %>%
+    filter(!is.na(Family), Family != "", !(Family %in% c("168", "169")))
+    # select(-S1, -S2, -preg, -family)
+cell_types.W <- df.W %>% select(-Sample, -Data, -Info, -Source, -Pregnancy, -Family) %>% colnames()
+
+df.W06 %>% dim()
+df.W22 %>% dim()
+cell_types.W
+df.W %>% head()
+```
+
+### Import Blood Draw Gestational Age Information
+
+Next, we import the gestational age at the time of sample collection from clinical metadata provided in the file `市妇幼临床.xlsx`.
+
+Only valid samples with available GA data are retained.
+
+```{r}
+#| eval: false
+#| include: false
+df.W.meta <- read_excel("../市妇幼临床.xlsx", 
+    sheet = "临床", range = "A1:A318")
+colnames(df.W.meta) <- "Family"
+df.W.meta$Family[317] <- "229"
+
+tmp_df <- read_excel("../市妇幼临床.xlsx", 
+    sheet = "临床", range = "AK1:AM318")
+colnames(tmp_df) <- c("A", "B", "C")
+
+df.W.meta <- df.W.meta %>% cbind(tmp_df) %>%
+    gather(key = "Pregnancy", value = "collectGA", -Family) %>%
+    na.omit()
+
+# df.W.meta <- read_excel("../市妇幼采血孕周.xlsx")
+# colnames(df.W.meta)[1:2] <- c("Family", "Pregnancy")
+# df.W.meta <- df.W.meta %>% mutate(Family = as.character(Family)) 
+
+df.W.meta %>% head()
+df.W.meta %>% group_by(Family, Pregnancy) %>% summarise(count = n()) %>% filter(count > 1)
+```
+
+### Merge Meta Data with Main Table
+
+Clinical metadata including family ID, pregnancy stage, and gestational age is merged with the main proportion table.
+
+```{r}
+#| eval: false
+#| include: false
+df.W <- df.W %>% 
+    merge(df.W.meta, by = c("Family", "Pregnancy"), all.x = TRUE) %>%
+    select(collectGA, Info, Source, Pregnancy, Family, Data, everything()) %>%
+    filter(!is.na(collectGA))
+df.W %>% head()
+```
+
+```{r}
+#| eval: false
+#| include: false
+tmp <- df.W %>% filter(Data == "W06") %>% 
+    separate(Sample, c("S1", "S2", "preg", "family"), sep = "-", remove = FALSE) %>%
+    filter(S1 == "PW", S2 == "PR", preg %in% c("A", "B", "C"))
+
+tmp$Sample -> samples.original_W06
+tmp$family %>% unique()
+tmp$family %>% unique() %>% length()
+tmp %>% nrow()
+```
+
+#### Filter Based on Quality Control (QC)
+
+A list of QC-passed samples is loaded and used to filter the dataset.
+
+```{r}
+#| eval: false
+#| include: false
+# list.qc_sample <- read_excel("../市妇幼临床.xlsx", 
+#     sheet = "质控通过W06") %>%
+#     pull("sample")
+
+# 新的质控
+load("exp_qc/samples.geneQC.Rdata")
+list.qc_sample <- samples.geneQC
+
+df.W <- df.W %>% filter(Sample %in% list.qc_sample)
+```
+
+### stat all samples
+
+```{r}
+#| eval: false
+#| include: false
+df_tmp <- df.W %>% filter(Data == "W06") %>%
+    separate(col = Sample, into = c("S1", "S2", "preg", "family"), sep = "-", remove = FALSE) %>%
+    filter(S1 == "PW", S2 == "PR", preg %in% c("A", "B", "C"))
+
+df_tmp$Sample -> samples.afterQC_W06
+df_tmp$family %>% unique()
+df_tmp$family %>% unique() %>% length()
+df_tmp %>% nrow()
+
+df_tmp %>% group_by(Sample) %>% summarise(count = n()) %>% filter(count > 1)
+```
+
+processing
+
+```{r}
+#| eval: false
+#| include: false
+df.W <- df.W %>% separate(Sample, sep = "-", into = c(
+    "Info", "Source", "Pregnancy", "Family"
+)) %>%
+    filter(Pregnancy != "F")
+df.W %>% group_by(Info, Source, Pregnancy) %>%
+    summarise(count = n())
+df.W %>% head()
+```
+
+### stat samples pass QC
+
+```{r}
+#| eval: false
+#| include: false
+df.samples_collectGA <- df.W %>% 
+    filter(Info == "PW", Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    select(collectGA, Info, Source, Pregnancy, Family) %>% mutate(Group = "passQC")
+```
+
+### Group Samples by Collection Information
+
+We categorize each sample based on metadata fields (e.g., Info, Source, Pregnancy) and assign descriptive group names.
+
+```{r}
+#| eval: false
+#| include: false
+df.W <- df.W %>%
+    mutate(Group = if_else(
+        Info != "PW",
+        "CTL",
+        paste(Info, Source, Pregnancy, sep = "-")
+    ))
+
+df.W %>% group_by(Data, Group) %>%
+    summarise(count = n())
+df.W %>% head()
+```
+
+## Correlation Between W06 cfRNA Profiles and Clinical Features
+
+### Load Clinical Test Results
+
+We extract clinical lab results such as WBC, glucose levels, and other blood tests relevant to GDM status from the clinical sheet.
+
+```{r}
+#| eval: false
+#| include: false
+df.W.dis <- read_excel("~/Desktop/Decon_test/real_data/pregnant_model/GDM_groups.xlsx", 
+    col_types = c("text", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "text")) %>% 
+    dplyr::rename(Family = sampleID)
+    
+df.W.dis %>% group_by(Family) %>% summarise(count = n()) %>% filter(count > 1)
+
+df.W.dis %>% head()
+
+
+```
+
+## GDM Stratification in the W06 Cohort
+
+We define case-control groups based on OGTT results:
+
+-   GDM: At least one abnormal glucose value (≥5.1 mmol/L fasting, ≥10 mmol/L 1-hr, ≥8.5 mmol/L 2-hr)
+-   CTRL: All glucose values within normal range
+
+Samples flagged as pGDM (family ID = 2025) are excluded.
+
+```{r}
+df.W06.GDM <- df.W %>% filter(Info == "PW", Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    left_join(df.W.dis, by = "Family") %>% 
+    filter(!is.na(GLU0), !is.na(GLU1), !is.na(Glu2), OGTTweek >= 23, OGTTweek < 29)
+
+df.W06.GDM %>% nrow()
+df.W06.GDM$Family %>% unique()
+df.W06.GDM$Family %>% unique() %>% length()
+```
+
+exclude pGDM samples
+
+```{r}
+# 2025号样本是pGDM，排除
+df.W06.GDM <- df.W06.GDM %>% filter(Family != "2025")
+
+df.W06.GDM %>% nrow()
+df.W06.GDM$Family %>% unique()
+df.W06.GDM$Family %>% unique() %>% length()
+
+```
+
+divide into case and ctrl groups according OGTT records
+
+```{r}
+list.familyid.GDM_only <- df.W06.GDM %>% filter(GLU0 >= 5.1 | GLU1 >= 10 | Glu2 >= 8.5) %>% 
+    pull("Family") %>% unique()
+list.familyid.ctrl <- df.W06.GDM %>% filter(!(Family %in% list.familyid.GDM_only)) %>% 
+    pull("Family") %>% unique()
+list.familyid.GDM_only 
+list.familyid.GDM_only %>% length()
+df.W06.GDM %>% filter(Family %in% list.familyid.GDM_only) %>% nrow()
+list.familyid.ctrl
+list.familyid.ctrl %>% length()
+df.W06.GDM %>% filter(Family %in% list.familyid.ctrl) %>% nrow()
+```
+
+```{r}
+df.W06.GDM %>% mutate(Group = ifelse(Family %in% list.familyid.GDM_only, "GDM", "CTRL")) %>%
+    group_by(Group, `24-28`) %>% summarise(count = n())
+```
+
+exclude other disease
+
+```{r}
+list.familyid.exclude <- df.W06.GDM %>% filter(!(`24-28` %in% c("CTL", "GDM"))) %>% pull("Family")
+list.familyid.GDM_only <- list.familyid.GDM_only %>% setdiff(list.familyid.exclude)
+list.familyid.ctrl <- list.familyid.ctrl %>% setdiff(list.familyid.exclude)
+
+list.familyid.GDM_only 
+list.familyid.GDM_only %>% length()
+df.W06.GDM %>% filter(Family %in% list.familyid.GDM_only) %>% nrow()
+list.familyid.ctrl
+list.familyid.ctrl %>% length()
+df.W06.GDM %>% filter(Family %in% list.familyid.ctrl) %>% nrow()
+```
+
+### Save Results
+
+Results are saved into CSV files for future reference and further filtering.
+
+```{r}
+# write.csv(df.W.test.sign, file = "df.shifuyou.test.sign.csv", row.names = FALSE)
+# write.csv(df.W.test, file = "df.shifuyou.test.csv", row.names = FALSE)
+```
+
+## Correlation Between W06 cfRNA Profiles and Clinical Features
+
+### Load Clinical Test Results
+
+We extract clinical lab results such as WBC, glucose levels, and other blood tests relevant to GDM status from the clinical sheet.
+
+```{r}
+#| eval: false
+#| include: false
+df.W06.blood_test <- read_excel("市妇幼RNA临床(2).xlsx", 
+    sheet = "Sheet1", skip = 1) %>% as.data.frame()
+
+df.W06.blood_test %>% head()
+df.W06.blood_test %>% dim()
+```
+
+### Merge With Cell Fraction Data
+
+Only cfRNA samples with corresponding clinical test records are retained for correlation analysis.
+
+```{r}
+df.W06.cli <- df.W %>%
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>% 
+    mutate(sample = paste(Info, Source, Pregnancy, Family, sep = "-")) %>%
+    left_join(df.W06.blood_test, by = "sample")
+
+df.W06.cli %>% head()
+df.W06.cli %>% dim()
+```
+
+### List Available Clinical Parameters
+
+We extract all clinical parameter names and verify their availability and completeness.
+
+```{r}
+#| eval: false
+#| include: false
+cli_types <- read_excel("市妇幼RNA临床(2).xlsx", 
+    sheet = "Sheet1", range = "AG2:ES10") %>%
+    colnames()
+cli_types
+df.W06.cli %>% select(all_of(cli_types)) %>% apply(2, function(x) sum(x != "NA"))
+```
+
+将临床检测类型和中文解释对应
+
+```{r}
+#| eval: false
+#| include: false
+cli_types.explain <- read_excel("市妇幼RNA临床(2).xlsx", 
+    sheet = "Sheet1", range = "AG1:ES1") %>%
+    colnames()
+names(cli_types.explain) <- cli_types
+```
+
+### Compute Correlations Between Clinical Items and Cell Types
+
+For each pair of cell type and clinical item, we calculate Pearson, Spearman, and Kendall correlations along with p-values to assess significance.
+
+We use parallel computing to accelerate this process.
+
+Significance markers are added: - `*`: p \< 0.05 - `**`: p \< 0.01 - `***`: p \< 0.001
+
+```{r}
+sign_symbol <- function(x) {
+    ifelse(x > 0.05, NA, ifelse(x > 0.01, "*", ifelse(x > 0.001, "**", "***")))
+}
+
+plan(multisession)
+params <- tidyr::crossing(cell = cell_types.W, cli_item = cli_types)
+
+process_pair <- function(cell, cli_item) {
+    df_tmp <- df.W06.cli %>%
+        select(all_of(c(cell, cli_item))) %>%
+        setNames(c("Cell", "Cli_item")) %>%
+        mutate(Cli_item = if_else(Cli_item == "NA", NA, as.numeric(Cli_item))) %>%
+        na.omit()
+    
+    n <- nrow(df_tmp)
+    if (n <= 0) return(NULL)
+    
+    x <- pull(df_tmp, 1)
+    y <- pull(df_tmp, 2)
+    
+    tryCatch({
+        pearson <- cor.test(x, y, method = "pearson")
+        spearman <- cor.test(x, y, method = "spearman")
+        kendall <- cor.test(x, y, method = "kendall")
+        
+        data.frame(
+            n = n,
+            cell = cell,
+            cell_mean = mean(x),
+            cell_median = median(x),
+            clinical_item = cli_item,
+            clinical_item_mean = mean(y),
+            clinical_item_median = median(y),
+            cor_pearson = pearson$estimate,
+            p_pearson = pearson$p.value,
+            cor_spearman = spearman$estimate,
+            p_spearman = spearman$p.value,
+            cor_kendall = kendall$estimate,
+            p_kendall = kendall$p.value,
+            sign_pearson = sign_symbol(pearson$p.value),
+            sign_spearman = sign_symbol(spearman$p.value),
+            sign_kendall = sign_symbol(kendall$p.value)
+        )
+    }, error = function(e) NULL)
+}
+# 并行执行
+results <- future_lapply(seq_len(nrow(params)), function(i) {
+    process_pair(params$cell[i], params$cli_item[i])
+})
+plan(sequential)
+
+# 合并结果
+df.W06.cli.cor <- dplyr::bind_rows(results)
+
+saveRDS(df.W06.cli.cor, "df.W06.cli.cor.RDS")
+```
+
+annotation
+
+```{r}
+df.W06.cli.cor <- df.W06.cli.cor %>% 
+    mutate(clinical_item_explain = cli_types.explain[clinical_item])
+
+```
+
+filter sign results
+
+```{r}
+df.W06.cli.cor.filtered <- df.W06.cli.cor %>% 
+    filter(!is.na(sign_pearson) | !is.na(sign_spearman) | !is.na(sign_kendall) |
+               abs(cor_pearson) > 0.3 | abs(cor_spearman) > 0.3 | abs(cor_kendall) > 0.3) %>%
+    # filter(!(is.na(sign_spearman) & is.na(sign_kendall))) %>%
+    filter(n >= 50)
+
+df.W06.cli.cor.filtered
+```
+
+export as csv table
+
+```{r}
+write_csv(df.W06.cli.cor.filtered, "df.W06.cli.cor.filtered.csv")
+write_csv(df.W06.cli.cor, "df.W06.cli.cor.csv")
+```
+
+## Early Cell Composition vs Mid-Pregnancy OGTT Outcomes
+
+We analyze whether early pregnancy cell profiles can predict later OGTT outcomes.
+
+```{r}
+df.W06.cli.early_ogtt <- df.W06.cli %>% filter(collectGA < 14)
+    
+df.W06.blood_test.ogtt <- read_excel("GDM_groups.xlsx", 
+    col_types = c("text", "text", "text", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "text")) %>%
+    dplyr::rename(Family = "sampleID")
+
+df.W06.cli.early_ogtt <- df.W06.cli.early_ogtt %>% select(-GLU0, -GLU1, -Glu2) %>%
+    left_join(df.W06.blood_test.ogtt, by = "Family", multiple = "last") %>%
+    mutate("OGTT-AUC" = as.numeric(GLU1) + (as.numeric(GLU0) + as.numeric(Glu2))/2)
+
+
+
+sign_symbol <- function(x) {
+    ifelse(x > 0.05, NA, ifelse(x > 0.01, "*", ifelse(x > 0.001, "**", "***")))
+}
+
+plan(multisession)
+params <- tidyr::crossing(cell = cell_types.W, 
+                          cli_item = c("GLU0", "GLU1", "Glu2", "OGTT-AUC"))
+
+process_pair <- function(cell, cli_item) {
+    df_tmp <- df.W06.cli.early_ogtt %>%
+        select(all_of(c(cell, cli_item))) %>%
+        setNames(c("Cell", "Cli_item")) %>%
+        mutate(Cli_item = if_else(Cli_item == "NA", NA, as.numeric(Cli_item))) %>%
+        na.omit()
+    
+    n <- nrow(df_tmp)
+    if (n <= 0) return(NULL)
+    
+    x <- pull(df_tmp, 1)
+    y <- pull(df_tmp, 2)
+    
+    tryCatch({
+        pearson <- cor.test(x, y, method = "pearson")
+        spearman <- cor.test(x, y, method = "spearman")
+        kendall <- cor.test(x, y, method = "kendall")
+        
+        data.frame(
+            n = n,
+            cell = cell,
+            cell_mean = mean(x),
+            cell_median = median(x),
+            clinical_item = cli_item,
+            clinical_item_mean = mean(y),
+            clinical_item_median = median(y),
+            cor_pearson = pearson$estimate,
+            p_pearson = pearson$p.value,
+            cor_spearman = spearman$estimate,
+            p_spearman = spearman$p.value,
+            cor_kendall = kendall$estimate,
+            p_kendall = kendall$p.value,
+            sign_pearson = sign_symbol(pearson$p.value),
+            sign_spearman = sign_symbol(spearman$p.value),
+            sign_kendall = sign_symbol(kendall$p.value)
+        )
+    }, error = function(e) NULL)
+}
+# 并行执行
+results <- future_lapply(seq_len(nrow(params)), function(i) {
+    process_pair(params$cell[i], params$cli_item[i])
+})
+plan(sequential)
+
+# 合并结果
+df.W06.cli.early_ogtt.cor <- dplyr::bind_rows(results)
+
+saveRDS(df.W06.cli.early_ogtt.cor, "df.W06.cli.early_ogtt.cor.RDS")
+```
+
+annotation
+
+```{r}
+df.W06.cli.early_ogtt.cor <- df.W06.cli.early_ogtt.cor %>% 
+    mutate(clinical_item_explain = cli_types.explain[clinical_item])
+
+```
+
+filter sign results
+
+```{r}
+df.W06.cli.early_ogtt.cor.filtered <- df.W06.cli.early_ogtt.cor %>% 
+    filter(!is.na(sign_pearson) | !is.na(sign_spearman) | !is.na(sign_kendall) |
+               abs(cor_pearson) > 0.3 | abs(cor_spearman) > 0.3 | abs(cor_kendall) > 0.3) %>%
+    # filter(!(is.na(sign_spearman) & is.na(sign_kendall))) %>%
+    filter(n >= 50)
+
+df.W06.cli.early_ogtt.cor.filtered
+```
+
+export as csv table
+
+```{r}
+write_csv(df.W06.cli.early_ogtt.cor.filtered, "df.W06.cli.early_ogtt.cor.filtered.csv")
+write_csv(df.W06.cli.early_ogtt.cor, "df.W06.cli.early_ogtt.cor.csv")
+```
+
+## Early Cell Composition vs Mid-Pregnancy OGTT Outcomes
+
+We analyze whether early pregnancy cell profiles can predict later OGTT outcomes.
+
+```{r}
+draw_scatter_cor_cell_cli <- function(cell, cli_item) {
+    # cell <- "bladder_urothelial_cell"
+    # cli_item <- "GLU0"
+    df.W06.cli %>%
+        select(all_of(c(cell, cli_item))) %>%
+        setNames(c("Cell", "Cli_item")) %>%
+        mutate(Cli_item = if_else(Cli_item == "NA", NA, as.numeric(Cli_item))) %>%
+        na.omit() %>%
+        ggplot(aes(x = Cell, y = Cli_item)) +
+        geom_point(color = "blue", alpha = 0.2, size = 1) +
+        # facet_wrap(~ Simplified_cell_types, scales = "free_y") +
+        theme_bw() +
+        # labs(
+        #     subtitle = paste(df.cell_type$Simplified_cell_types[df.cell_type$Cell_type == cell],
+        #         cli_item,
+        #         sep = " - "
+        #     ),
+        #     x = "", y = ""
+        # ) +
+        labs(y = cli_item, x = list.cell_type[cell]) +        
+        geom_smooth(method = lm, color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+        stat_cor(method = "spearman", size = 3, color = "black") +
+        theme(plot.subtitle = element_text(hjust = 0.5),
+              axis.text.x  = element_text(angle = 30 , hjust = 1))
+}
+
+# cell_types.select <- c("duodenum_glandular_cell", "early_SCT", 
+#                        "pancreatic_alpha_cell__pancreatic_beta_cell",
+#                        "pancreatic_stellate_cell")
+# cli_item.select <- c("GLU1", "Glu2")
+# list.scatter <- list()
+
+p <-
+    draw_scatter_cor_cell_cli("duodenum_glandular_cell", "GLU1") +
+    draw_scatter_cor_cell_cli("early_SCT", "GLU1") +
+    draw_scatter_cor_cell_cli("pancreatic_alpha_cell__pancreatic_beta_cell", "GLU1") +
+    draw_scatter_cor_cell_cli("pancreatic_stellate_cell", "GLU1") +
+    draw_scatter_cor_cell_cli("duodenum_glandular_cell", "Glu2") +
+    draw_scatter_cor_cell_cli("early_SCT", "Glu2") +
+    draw_scatter_cor_cell_cli("pancreatic_alpha_cell__pancreatic_beta_cell", "Glu2") +
+    draw_scatter_cor_cell_cli("pancreatic_stellate_cell", "Glu2") +
+    plot_layout(ncol = 4)
+    
+p
+
+ggsave("plot/scatter_cor_ogtt_middle.pdf",
+       height = 4, width = 8.5, units = "in")
+    
+```
+
+### Visualize Correlations with Scatter Plots
+
+Scatter plots with linear regression lines are created for significant correlations between selected cell types and OGTT metrics.
+
+Plots are saved for reporting purposes.
+
+```{r}
+df.W06.cli.early_ogtt
+
+
+draw_scatter_cor_cell_cli2 <- function(cell, cli_item) {
+    # cell <- "bladder_urothelial_cell"
+    # cli_item <- "GLU0"
+    df.W06.cli.early_ogtt %>%
+        select(all_of(c(cell, cli_item))) %>%
+        setNames(c("Cell", "Cli_item")) %>%
+        mutate(Cli_item = if_else(Cli_item == "NA", NA, as.numeric(Cli_item))) %>%
+        na.omit() %>%
+        ggplot(aes(x = Cell, y = Cli_item)) +
+        geom_point(color = "blue", alpha = 0.2, size = 1) +
+        # facet_wrap(~ Simplified_cell_types, scales = "free_y") +
+        theme_bw() +
+        # labs(
+        #     subtitle = paste(df.cell_type$Simplified_cell_types[df.cell_type$Cell_type == cell],
+        #         cli_item,
+        #         sep = " - "
+        #     ),
+        #     x = "", y = ""
+        # ) +
+        labs(y = cli_item, x = list.cell_type[cell]) +        
+        geom_smooth(method = lm, color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+        stat_cor(method = "spearman", size = 3, color = "black") +
+        theme(plot.subtitle = element_text(hjust = 0.5),
+              axis.text.x  = element_text(angle = 30 , hjust = 1))
+}
+
+
+p <-
+    draw_scatter_cor_cell_cli2("late_EVT", "GLU0") +
+    draw_scatter_cor_cell_cli2("late_EVT", "GLU1") +
+    draw_scatter_cor_cell_cli2("late_EVT", "OGTT-AUC") +
+    draw_scatter_cor_cell_cli2("cell_of_skeletal_muscle", "Glu2") +
+    draw_scatter_cor_cell_cli2("cell_of_skeletal_muscle", "OGTT-AUC") +
+    draw_scatter_cor_cell_cli2("plasma_cell", "GLU1") +
+    draw_scatter_cor_cell_cli2("pancreatic_acinar_cell", "GLU0") +
+    draw_scatter_cor_cell_cli2("pancreatic_acinar_cell", "GLU1") +
+    draw_scatter_cor_cell_cli2("pancreatic_acinar_cell", "OGTT-AUC") +
+    draw_scatter_cor_cell_cli2("pancreatic_alpha_cell__pancreatic_beta_cell", "GLU1") +
+    draw_scatter_cor_cell_cli2("pancreatic_alpha_cell__pancreatic_beta_cell", "OGTT-AUC") +
+    draw_scatter_cor_cell_cli2("hepatocyte", "GLU1") +
+    draw_scatter_cor_cell_cli2("salivary_gland_cell", "GLU1") +
+    draw_scatter_cor_cell_cli2("intestinal_enteroendocrine_cell__paneth_cell_of_epithelium_of_small_intestine__transit_amplifying_cell_of_small_intestine", "GLU1") +
+    draw_scatter_cor_cell_cli2("intestinal_enteroendocrine_cell__paneth_cell_of_epithelium_of_small_intestine__transit_amplifying_cell_of_small_intestine", "OGTT-AUC") +
+    draw_scatter_cor_cell_cli2("intestinal_enterocyte", "GLU1") +
+    plot_layout(ncol = 4)
+    
+p
+
+ggsave("plot/scatter_cor_ogtt_early.pdf",
+       height = 8, width = 8.5, units = "in")
+```
+
+## GDM Stratification in the W06 Cohort
+
+We define case-control groups based on OGTT results:
+
+-   GDM: At least one abnormal glucose value (≥5.1 mmol/L fasting, ≥10 mmol/L 1-hr, ≥8.5 mmol/L 2-hr)
+-   CTRL: All glucose values within normal range
+
+Samples flagged as pGDM (family ID = 2025) are excluded.
+
+```{r}
+df.W06.GDMonly_vs_healthy <- df.W %>% 
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    mutate(Group = case_when(
+        Family %in% list.familyid.GDM_only ~ "GDM",
+        Family %in% list.familyid.ctrl ~ "CTRL",
+        TRUE ~ NA
+    )) %>% 
+    na.omit() %>%
+    mutate(Pregnancy_old = Pregnancy, Pregnancy = factor(case_when(
+        collectGA < 14 ~ "first trimester",
+        collectGA < 28 ~ "second trimester",
+        TRUE ~ "third trimester"
+    ), levels = c("first trimester", "second trimester", "third trimester")))
+    
+
+df.W06.GDMonly_vs_healthy %>% dim()
+df.W06.GDMonly_vs_healthy %>% group_by(Pregnancy, Group) %>% 
+    summarise(count = n())
+
+df.W06.GDMonly_vs_healthy %>% write_csv("df.W06.GDMonly_vs_healthy.csv")
+```
+
+### 
+
+### Compare Differences in GA Between GDM and CTRL Groups Per Trimester
+
+We perform Wilcoxon rank-sum tests to assess whether there are significant differences in gestational age between GDM and control groups.
+
+Results are saved in CSV format.
+
+```{r}
+#| eval: false
+#| include: false
+samples.GDM_record <- read_excel("../市妇幼临床.xlsx", 
+    sheet = "临床", range = "A1:E317") %>% 
+    select(familyID, GDM) %>%
+    na.omit() %>% pull("familyID")
+    
+```
+
+summary
+
+```{r}
+df.W06.GDMonly_vs_healthy %>% 
+    mutate(Group_record = ifelse(Family %in% samples.GDM_record, "GDM", "CTRL")) %>%
+    group_by(Group, Group_record) %>% summarise(count = n())
+
+df.W06.GDMonly_vs_healthy %>% 
+    mutate(Group_record = ifelse(Family %in% samples.GDM_record, "GDM", "CTRL")) %>%
+    filter(Group == "GDM", Group_record == "CTRL") %>% 
+    pull("Family") %>% unique() %>% sort() %>% cat()
+```
+
+Hypothesis testing for each trimester
+
+```{r}
+df.W06.GDM.GA.test <- data.frame()
+for (preg in (df.W06.GDMonly_vs_healthy$Pregnancy %>% levels())) {
+    tmp.df <- df.W06.GDMonly_vs_healthy %>% filter(Pregnancy == preg)
+    
+    
+    # for (type in cell_types.W) {
+        x <- tmp.df %>% filter(Group == "GDM") %>% pull(collectGA)
+        y <- tmp.df %>% filter(Group == "CTRL") %>% pull(collectGA)
+        test_res <- wilcox.test(x, y)
+        df.W06.GDM.GA.test <- df.W06.GDM.GA.test %>% rbind(
+            data.frame(
+                Pregnancy = preg,
+                Mean_gdm = mean(x),
+                Median_gdm = median(x),
+                Mean_ctrl = mean(y),
+                Median_ctrl = median(y),
+                P_wilcox = test_res$p.value
+            )
+        )
+        
+    # }
+    
+    
+}
+
+df.W06.GDM.GA.test$Padj_BH <- df.W06.GDM.GA.test$P_wilcox %>% p.adjust(method = "BH")
+write.csv(df.W06.GDM.GA.test, file = "df.W06.GDM.GA.test.csv", row.names = FALSE)
+df.W06.GDM.GA.test %>% head()
+```
+
+## Visualization of Sample Collection GA Distribution
+
+Violin plots and boxplots are generated to show how samples are distributed across different trimesters.
+
+```{r}
+df.W06.GDMonly_vs_healthy %>% select(collectGA, Info, Source, Pregnancy = Pregnancy_old, Family, Group) %>%
+    rbind(df.samples_collectGA) %>% 
+    mutate(Group = factor(Group, c("passQC", "CTRL", "GDM")),
+           Preg = case_when(
+               collectGA < 14 ~ "first trimester",
+               collectGA < 28 ~ "second trimester",
+               TRUE ~ "third trimester"
+           )) -> df_tmp
+
+df_tmp %>% group_by(Group) %>% summarise(count = n())
+
+
+ggplot() +
+    geom_half_violin(
+        data = df_tmp %>% filter(Group == "passQC"),
+        aes(y = collectGA, x = Group), side = "l", fill = "#A6CEE3", width = 1) +
+    geom_beeswarm(data = df_tmp %>% filter(Group == "passQC"),
+        aes(y = collectGA, x = Group), side = 1, size = 0.6, cex = 0.8) +
+    
+    geom_half_violin(
+        data = df_tmp %>% filter(Group == "CTRL") %>% mutate(Group = "CTRL /\nGDM"),
+        aes(y = collectGA, x = Group), side = "l", fill = "#A6CEE3", width = 0.75) +
+    geom_beeswarm(data = df_tmp %>% filter(Group == "CTRL") %>% mutate(Group = "CTRL /\nGDM"),
+        aes(y = collectGA, x = Group), side = -1, size = 0.6, cex = 0.8) +
+    
+    geom_half_violin(
+        data = df_tmp %>% filter(Group == "GDM") %>% mutate(Group = "CTRL /\nGDM"),
+        aes(y = collectGA, x = Group), side = "r", fill = "#1F78B4", width = 0.25) +
+    geom_beeswarm(data = df_tmp %>% filter(Group == "GDM") %>% mutate(Group = "CTRL /\nGDM"),
+        aes(y = collectGA, x = Group), side = 1, size = 0.6, cex = 0.8) +
+    
+    theme_bw() +
+    scale_y_continuous(position = "right") +
+    geom_hline(yintercept = 14, color = "#E31A1C", linetype="dashed") +
+    geom_hline(yintercept = 28, color = "#E31A1C", linetype="dashed") +
+    labs(x = "") +
+    theme(
+    # axis.title.x = element_text(angle = 180),
+    axis.title.y.right = element_text(angle = 90),
+    axis.text.x.bottom = element_text(angle = 90, vjust = 0.5),
+    axis.text.y.right = element_text(angle = 90, hjust = 0.5)
+  )
+
+ggsave("plot/samples_collectGA_violin_halves.pdf", height = 6, width = 5)
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FB9A99" "#E31A1C" "#FDBF6F" "#FF7F00" "#CAB2D6" "#6A3D9A" "#FFFF99" "#B15928"
+```
+
+```{r}
+#| eval: false
+#| include: false
+df.W06.GDMonly_vs_healthy %>% select(collectGA, Info, Source, Pregnancy = Pregnancy_old, Family, Group) %>%
+    rbind(df.samples_collectGA) %>% 
+    mutate(Group = factor(Group, c("passQC", "CTRL", "GDM")),
+           Preg = case_when(
+               collectGA < 14 ~ "first trimester",
+               collectGA < 28 ~ "second trimester",
+               TRUE ~ "third trimester"
+           )) -> df_tmp
+
+df_tmp %>% group_by(Group) %>% summarise(count = n())
+
+df_tmp %>%
+    ggplot(aes(y = Group, x = collectGA)) +
+    geom_violin(fill = "#A6CEE3") +
+    geom_boxplot(fill = "#1F78B4", width = 0.1, outliers = TRUE, outlier.size = 0.5) +
+    scale_fill_viridis(discrete = TRUE, alpha = 0.6) +
+    geom_jitter(color = "black", size = 0.4, alpha = 0.9, 
+                position = position_jitter(width = 0, height = 0.3)) +  # 只允许轻微横向抖动，关闭纵向抖动
+    facet_wrap(~Preg, scales = "fixed", ncol = 1) +
+    theme_bw() +
+    # scale_x_continuous(limits = c(5, 40)) + 
+    theme(panel.spacing.y = unit(0, "lines"))
+    # geom_vline(xintercept = c(14, 28), linetype = "dashed", color = "#E31A1C", linewidth = 0.8)
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FB9A99" "#E31A1C" "#FDBF6F" "#FF7F00" "#CAB2D6" "#6A3D9A" "#FFFF99" "#B15928"
+ggsave("plot/samples_collectGA_violin.pdf", height = 6, width = 6)
+```
+
+### Clinical Differences Between GDM and Control Groups
+
+We examine whether key clinical indicators differ significantly between GDM and CTRL samples using Wilcoxon tests.
+
+Significant items are identified and reported.
+
+```{r}
+df.W06.GDMonly_vs_healthy.cli <- df.W %>% 
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    mutate(sample = paste(Info, Source, Pregnancy, Family, sep = "-")) %>%
+    left_join(df.W06.blood_test, by = "sample") %>%
+    select(-all_of(cell_types.W)) %>%
+    mutate(Group = case_when(
+        Family %in% list.familyid.GDM_only ~ "GDM",
+        Family %in% list.familyid.ctrl ~ "CTRL",
+        TRUE ~ NA
+    )) %>% 
+    filter(!is.na(Group)) %>%
+    mutate(Pregnancy_old = Pregnancy, Pregnancy = factor(case_when(
+        collectGA < 14 ~ "first trimester",
+        collectGA < 28 ~ "second trimester",
+        TRUE ~ "third trimester"
+    ), levels = c("first trimester", "second trimester", "third trimester")))
+    
+df.W06.GDMonly_vs_healthy.cli %>% head()
+```
+
+### Calculate whether there are differences in the clinical traits of GDM-CTRL at different trimesters
+
+Start calculation
+
+```{r}
+plan(multisession)
+params <- tidyr::crossing(preg = c("first trimester", "second trimester", "third trimester"),
+                          item = cli_types[cli_types != "OGTT-AUC"])
+
+sign_symbol <- function(x) {
+    ifelse(x > 0.05, NA, ifelse(x > 0.01, "*", ifelse(x > 0.001, "**", "***")))
+}
+
+process_pair <- function(preg, item) {
+    # preg <- "first trimester"
+    # item <- "WBC"
+    tmp <- df.W06.GDMonly_vs_healthy.cli %>% 
+        select(all_of(item), Pregnancy, Group) %>%
+        filter(Pregnancy == preg)
+    colnames(tmp)[1] <- "value"
+    tmp <- tmp %>% 
+        mutate(value = ifelse(value == "NA", NA, as.numeric(value))) %>%
+        na.omit()
+    
+    x <- tmp %>% filter(Group == "GDM") %>% pull(1)
+    y <- tmp %>% filter(Group == "CTRL") %>% pull(1) 
+    
+    if (length(x) <= 1 || length(y) <= 1) 
+        return(NULL)
+    
+    data.frame(
+        cli_item = item,
+        pregnancy = preg,
+        n_GDM = length(x),
+        mean_GDM = mean(x),
+        sd_GDM = sd(x),
+        median_GDM = median(x),
+        n_CTRL = length(y),
+        mean_CTRL = mean(y),
+        sd_CTRL = sd(y),
+        median_CTRL = median(y),
+        p_wilcox = wilcox.test(x, y)$p.value
+    )
+        
+}
+
+
+results <- future_lapply(seq_len(nrow(params)), function(i) {
+    process_pair(params$preg[i], params$item[i])
+})
+plan(sequential)
+
+# 合并结果
+df.W06.GDMonly_vs_healthy.cli.test <- dplyr::bind_rows(results)
+df.W06.GDMonly_vs_healthy.cli.test <- df.W06.GDMonly_vs_healthy.cli.test %>%
+    mutate(sign_wilcox = sign_symbol(p_wilcox),
+           cli_item_explain = cli_types.explain[cli_item])
+
+write_csv(df.W06.GDMonly_vs_healthy.cli.test, "df.W06.GDMonly_vs_healthy.cli.test.csv")
+```
+
+### Changes in Cellular Fractions Across Trimesters in GDM and Controls
+
+We compute Wilcoxon tests to identify statistically significant differences in cell fractions between GDM and control groups per trimester.
+
+Significance markers are applied to highlight meaningful findings.
+
+```{r}
+df.W06.GDM.test <- data.frame()
+for (preg in (df.W06.GDMonly_vs_healthy$Pregnancy %>% levels())) {
+    tmp.df <- df.W06.GDMonly_vs_healthy %>% filter(Pregnancy == preg)
+    
+    
+    for (type in cell_types.W) {
+        x <- tmp.df %>% filter(Group == "GDM") %>% pull(type)
+        y <- tmp.df %>% filter(Group == "CTRL") %>% pull(type)
+        test_res <- wilcox.test(x, y)
+        df.W06.GDM.test <- df.W06.GDM.test %>% rbind(
+            data.frame(
+                Pregnancy = preg,
+                Cell_type = type,
+                Mean_gdm = mean(x),
+                Sd_gdm = sd(x),
+                Median_gdm = median(x),
+                Mean_ctrl = mean(y),
+                Sd_ctrl = sd(y),
+                Median_ctrl = median(y),
+                P_wilcox = test_res$p.value
+            )
+        )
+        
+    }
+    
+    
+}
+
+df.W06.GDM.test$Padj_BH <- df.W06.GDM.test$P_wilcox %>% p.adjust(method = "BH")
+
+df.W06.GDM.test %>% head()
+
+```
+
+sign symbol
+
+```{r}
+get_sign <- function(p) {
+  ifelse(p < 0.001, "***",
+         ifelse(p < 0.01, "**",
+                ifelse(p < 0.05, "*", NA)))
+}
+
+df.W06.GDM.test <- df.W06.GDM.test %>% mutate(
+    sign_P = get_sign(P_wilcox),
+    sign_Padj = get_sign(Padj_BH)
+)
+
+df.W06.GDM.test.sign <- df.W06.GDM.test %>%
+    filter(!is.na(sign_P) | !is.na(sign_Padj))
+
+df.W06.GDM.test %>% nrow()
+df.W06.GDM.test.sign %>% nrow()
+df.W06.GDM.test.sign
+```
+
+export
+
+```{r}
+write.csv(df.W06.GDM.test.sign, file = "df.W06_GDM.test.sign.csv", row.names = FALSE)
+write.csv(df.W06.GDM.test, file = "df.W06_GDM.test.csv", row.names = FALSE)
+```
+
+### Boxplots for Significant Cell Fraction Differences
+
+Boxplots are created for each significant cell type showing GDM vs CTRL distributions.
+
+A faceted plot is used to compare across pregnancy stages.
+
+```{r}
+list.GDM.sign <- 
+    paste(df.W06.GDM.test.sign$Pregnancy, df.W06.GDM.test.sign$Cell_type)
+
+df.W06.GDMonly_vs_healthy %>% 
+    gather(key = "Cell_type", value = "Fraction", -(1: 6), -Pregnancy_old, -Group) %>%
+    filter(paste(Pregnancy, Cell_type) %in% list.GDM.sign) %>%
+    mutate(Cell_type = Cell_type %>% str_replace_all("__", "\n& ")) %>%
+    mutate(Cell_type = Cell_type %>% str_replace_all("_", " ")) %>%
+    ggplot(aes(y = Cell_type, x = Fraction, fill = Group)) +
+    geom_boxplot(outliers = FALSE) +
+    facet_grid(Pregnancy ~ ., scales = "free", space = "free_y") +
+    # facet_wrap(~ Pregnancy, scales = "free", space = "free_x") +
+    labs(x = "Fraction", y = "Cell type") +
+    theme_bw() +
+    # scale_fill_manual(values = c("GDM" = "red", "CTRL" = "blue")) + 
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+    axis.text.y = element_text(angle = 30, vjust = 0.4),
+    legend.position = "top") -> plot
+
+plot
+ggsave(filename = "plot/plot_box_GDM_diff_frac.pdf",
+       width = 5.5, height = 6.5)
+
+    
+    
+```
+
+boxplots for paper
+
+```{r}
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FB9A99" "#E31A1C" "#FDBF6F" "#FF7F00"
+list.show <- c("late_EVT", "early_SCT",
+               "pancreatic_acinar_cell", "pancreatic_alpha_cell__pancreatic_beta_cell",
+               "hepatocyte", 
+               "duodenum_glandular_cell", "cell_of_skeletal_muscle", 
+               "salivary_gland_cell", "hematopoietic_stem_cell", "plasma_cell")
+
+df.cell_type.W06 <- df.cell_type %>% 
+    mutate(Simplified_cell_types = case_when(
+        # Simplified_cell_types == "bladder urothelial cell" ~ "bladder\nurothelial cell",
+        Simplified_cell_types == "pancreatic acinar cell" ~ "pancreatic\nacinar cell",
+        Simplified_cell_types == "pancreatic islet cells" ~ "pancreatic\nislet cells",
+        Simplified_cell_types == "duodenum glandular cell" ~ "duodenum\nglandular cell",
+        # Simplified_cell_types == "intestinal tuft cell" ~ "intestinal\ntuft cell",
+        # Simplified_cell_types == "intestinal secretory cells" ~ "intestinal\nsecretory cells",
+        Simplified_cell_types == "salivary gland cell" ~ "salivary\ngland cells",
+        # Simplified_cell_types == "intestinal secretory cells" ~ "intestinal\nsecretory cells",
+        Simplified_cell_types == "hematopoietic stem cell" ~ "hematopoietic\nstem cell",
+        # Simplified_cell_types == "myeloid progenitor" ~ "myeloid\nprogenitor",
+        Simplified_cell_types == "cell of skeletal muscle" ~ "cell of\nskeletal muscle",
+        TRUE ~ Simplified_cell_types
+    ))
+
+list.type <- df.cell_type.W06$Simplified_cell_types
+names(list.type) <- df.cell_type.W06$Cell_type
+list.show <- list.type[list.show]
+names(list.show) <- NULL
+
+df.W06.GDMonly_vs_healthy %>% 
+    gather(key = "Cell_type", value = "Fraction", -(1: 6), -Pregnancy_old, -Group) %>%
+    left_join(df.cell_type.W06, by = "Cell_type") %>%
+    filter(Simplified_cell_types %in% list.show) %>%
+    mutate(Simplified_cell_types = factor(Simplified_cell_types, level = list.show)) %>%
+    # mutate(Simplified_cell_types = case_when(
+    #     Simplified_cell_types == "bladder urothelial cell" ~ "bladder\nurothelial cell",
+    #     Simplified_cell_types == "pancreatic acinar cell" ~ "pancreatic\nacinar cell",
+    #     Simplified_cell_types == "duodenum glandular cell" ~ "duodenum\nglandular cell",
+    #     Simplified_cell_types == "intestinal tuft cell" ~ "intestinal\ntuft cell",
+    #     Simplified_cell_types == "intestinal secretory cells" ~ "intestinal\nsecretory cells",
+    #     Simplified_cell_types == "salivary gland cells" ~ "salivary\ngland cells",
+    #     Simplified_cell_types == "intestinal secretory cells" ~ "intestinal\nsecretory cells",
+    #     Simplified_cell_types == "hematopoietic stem cell" ~ "hematopoietic\nstem cell",
+    #     Simplified_cell_types == "myeloid progenitor" ~ "myeloid\nprogenitor",
+    #     TRUE ~ Simplified_cell_types
+    # )) %>%
+    ggplot(aes(x = Pregnancy, y = Fraction, fill = Group)) +
+    geom_boxplot(outliers = FALSE) +
+    facet_wrap(~ Simplified_cell_types, scales = "free_y", ncol = 4) +
+    theme_bw() +
+    scale_fill_brewer(palette = "Paired") +
+    theme(axis.text.y = element_text(angle = 30, vjust = 0.4),
+          axis.text.x = element_text(angle = 30, hjust = 1),
+          panel.spacing.x = unit(0, "in"))
+
+
+ggsave("plot/plot_box_preg_GDM_diff_frac.pdf", width = 7, height = 4.5)    
+    
+```
+
+### Full View of cfRNA Source Composition Across Pregnancy
+
+We create pie charts and bar charts summarizing cfRNA source proportions across three pregnancy stages: Early (GA \<14), Middle (14 ≤ GA \<28), Late (GA ≥28).
+
+Top contributors are labeled; minor ones are grouped as "Others".
+
+```{r}
+df.pie <- df.W %>% 
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    # mutate(Pregnancy = case_when(
+    #     Pregnancy == "A" ~ "Early",
+    #     Pregnancy == "B" ~ "Middle",
+    #     Pregnancy == "C" ~ "Late",
+    #     TRUE ~ NA
+    # )) %>%
+    na.omit() %>%
+    mutate(Pregnancy = case_when(
+        collectGA < 14 ~ "Early",
+        collectGA < 28 ~ "Middle",
+        TRUE ~ "Late"
+    )) %>%
+    select(Pregnancy, cell_types.W) %>%
+    gather(key = "Cell_type", value = "Proportion", -Pregnancy) %>%
+    group_by(Pregnancy, Cell_type) %>%
+    summarise(Proportion = mean(Proportion)) %>%
+    ungroup()
+
+pregnancy <- c("Early", "Middle", "Late")
+df.pie.list <- list()
+for (preg in pregnancy) {
+    df.pie.list[[preg]] <- df.pie %>% filter(Pregnancy == preg) %>%
+        arrange(desc(Proportion)) %>% 
+        left_join(df.cell_type, by = "Cell_type") %>%
+        mutate(Cell_type = if_else(Simplified_cell_types %>% is.na(), 
+                                    Cell_type, Simplified_cell_types) ) %>%
+        mutate(Rank = row_number()) %>% 
+        mutate(Cell_type = ifelse(Rank > 11, "Others", Cell_type)) %>% 
+        group_by(Cell_type) %>% 
+        summarise(Proportion = sum(Proportion)) %>%  
+        ungroup() %>%
+        arrange(Cell_type == "Others", desc(Proportion))
+}
+
+head(df.pie.list[1])
+
+```
+
+draw
+
+```{r}
+# tmp <- df.pie.list[["Early"]]
+draw_pie <- function(tmp) {
+    tmp <- tmp %>%
+        mutate(Proportion_percent = scales::percent(Proportion, accuracy = 0.01))
+    tmp$Cell_type <- factor(tmp$Cell_type, tmp$Cell_type)
+    
+    legend_labels <- paste0(tmp$Cell_type, " (", tmp$Proportion_percent, ")")
+    colors <- brewer.pal(length(unique(tmp$Cell_type)), "Paired")
+    
+    ggplot(tmp, aes(x = "", y = Proportion, fill = Cell_type)) +
+        geom_bar(stat = "identity",
+                 width = 1,
+                 color = "white") +
+        coord_polar("y", start = -2.3, direction = -1) +
+        theme_void() +
+        scale_fill_manual(values = setNames(colors, tmp$Cell_type), 
+                          labels = legend_labels) +
+        guides(fill = guide_legend(title = "Cell types (Proportion)"))
+}
+
+plot.pie.list <- list()
+for (preg in pregnancy) {
+    plot.pie.list[[preg]] <- df.pie.list[[preg]] %>%
+        draw_pie()
+    plot.pie.list[[preg]]
+    ggsave(filename = paste0("plot/pie_W06.", preg, ".pdf"),
+           height = 4, width = 6, units = "in")
+}
+plot.pie.list
+```
+
+3 bars pieplot
+
+```{r}
+tmp_df <- rbind(
+    df.pie.list[["Early"]] %>% mutate(Group = "Early"),
+    df.pie.list[["Middle"]] %>% mutate(Group = "Middle"),
+    df.pie.list[["Late"]] %>% mutate(Group = "Late")
+) %>%
+    mutate(Proportion_percent = scales::percent(Proportion, accuracy = 0.01)) %>%
+    mutate(Proportion_percent = if_else(Proportion > 0.02, Proportion_percent, NA))
+factor_level <- df.pie.list[["Early"]]$Cell_type %>%
+    union(df.pie.list[["Middle"]]$Cell_type) %>%
+    union(df.pie.list[["Late"]]$Cell_type)
+factor_level <- factor_level[factor_level != "Others"]
+factor_level[length(factor_level) + 1] <- "Others"
+# df.pie.list[["CTRL-Early"]]$Cell_type %>%
+#     intersect(df.pie.list[["CTRL-Late"]]$Cell_type) %>%
+#     intersect(df.pie.list[["PE-Early"]]$Cell_type) %>%
+#     intersect(df.pie.list[["PE-Late"]]$Cell_type)
+
+tmp_df$Cell_type <- factor(tmp_df$Cell_type, factor_level)
+tmp_df$Group <- factor(tmp_df$Group,
+                       c("Early", "Middle", "Late"))
+colors <- c(brewer.pal(length(factor_level), "Paired"), "#AAAAAA", "#BBBBBB")
+    
+plot.3bar <-
+    ggplot(tmp_df, aes(x = Group, y = Proportion, fill = Cell_type)) +
+    geom_bar(stat = "identity",
+             width = 1,
+             color = "white") +
+    geom_text(aes(label = Proportion_percent),
+              position = position_stack(vjust = 0.5),
+              size = 2) +
+    # coord_polar("y", start = -2.3, direction = -1) +
+    theme_bw() +
+    scale_fill_manual(values = setNames(colors, factor_level)) +
+    guides(fill = guide_legend(title = "Cell types")) +
+    labs(x = "")
+    # scale_y_continuous(expand = expansion(add = c(0.1, 0.1)))
+plot.3bar
+ggsave(filename = "plot/pie_W06_3bar.pdf",
+           height = 4, width = 5.4, units = "in")
+```
+
+### cfRNA Source Dynamics Across Pregnancy
+
+We investigate how major placental and other cell types change with gestational age using scatter plots and smoothing curves.
+
+Separate visualizations are made for:
+
+-   **Placental cells**
+-   **Immune cells**
+-   **Vascular and hematopoietic cells**
+-   **Insulin resistance-related tissues**
+
+All plots include trend lines and correlation annotations.
+
+```{r}
+df.scatter_fit <- df.W %>% 
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    filter(!(collectGA %>% is.na())) %>%
+    mutate(placenta = early_EVT + early_SCT + early_VCT +
+               late_EVT + late_SCT + late_VCT) %>%
+    # mutate(placenta = late_EVT + late_SCT + late_VCT) %>%
+    select(collectGA, cell_types.W, placenta) %>%
+    gather(key = "Cell_type", value = "Proportion", -collectGA) %>%
+    left_join(df.cell_type, by = "Cell_type") %>%
+    mutate(Simplified_cell_types = if_else(Simplified_cell_types %>% is.na(),
+                                Cell_type, Simplified_cell_types))
+df.scatter_fit
+
+list.cell_type <- df.cell_type$Simplified_cell_types
+names(list.cell_type) <- df.cell_type$Cell_type
+list.cell_type["placenta"] <- "placenta"
+```
+
+### trophoblast cells
+
+```{r}
+cell_types.W.preg <- c("early_EVT", "early_SCT", "early_VCT", "placenta",
+                       "late_EVT", "late_SCT", "ciliated_epithelial_cell__epithelial_cell_of_uterus")
+
+plot.scatter.preg <- df.scatter_fit %>% filter(Cell_type %in% cell_types.W.preg) %>%
+    mutate(Simplified_cell_types = factor(Simplified_cell_types, 
+                                          list.cell_type[cell_types.W.preg])) %>%
+    ggplot(aes(x = collectGA, y = Proportion)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ Simplified_cell_types, scales = "free_y", ncol = 4) +
+    theme_bw() + 
+    xlab("Gestation weeks") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    stat_cor(method = "pearson", size = 3, color = "black")
+plot.scatter.preg
+
+ggsave("plot/scatter_cor_preg_cells.pdf", 
+       height = 3.3, width = 8, units = "in")
+```
+
+### immune cells
+
+```{r}
+cell_types.W.immu <- c("b_cell", "macrophage", "nk_cell", "innate_lymphoid_cell", 
+                       "plasmablast", "myeloid_progenitor", "t_cell", "mature_conventional_dendritic_cell")
+
+plot.scatter.immu <- df.scatter_fit %>% filter(Cell_type %in% cell_types.W.immu) %>%
+    # mutate(Cell_type = case_when(
+    #     Cell_type == "erythrocyte__erythroid_progenitor" ~ "erythrocyte__\nerythroid_progenitor",
+    #     TRUE ~ Cell_type
+    # )) %>%
+    mutate(Simplified_cell_types = factor(Simplified_cell_types, 
+                                          list.cell_type[cell_types.W.immu])) %>%
+    ggplot(aes(x = collectGA, y = Proportion)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ Simplified_cell_types, scales = "free_y", ncol = 4) +
+    theme_bw() + 
+    xlab("Gestation weeks") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    stat_cor(method = "spearman", size = 3, color = "black")
+plot.scatter.immu
+
+ggsave("plot/scatter_cor_immu_cells.pdf", 
+       height = 3.3, width = 8, units = "in")
+```
+
+### Vascular blood-related cells
+
+```{r}
+cell_types.W.blood <- c("adventitial_cell", "erythrocyte__erythroid_progenitor",
+                         "endothelial_cell",                          
+                         "pericyte_cell", "platelet", "hematopoietic_stem_cell")
+
+plot.scatter.blood <- df.scatter_fit %>% filter(Cell_type %in% cell_types.W.blood) %>%
+    mutate(Simplified_cell_types = factor(Simplified_cell_types, 
+                                          list.cell_type[cell_types.W.blood])) %>%
+    ggplot(aes(x = collectGA, y = Proportion)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ Simplified_cell_types, scales = "free_y", ncol = 3) +
+    theme_bw() + 
+    xlab("Gestation weeks") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    stat_cor(method = "spearman", size = 3, color = "black")
+plot.scatter.blood
+
+ggsave("plot/scatter_cor_blood_cells.pdf", 
+       height = 3.3, width = 6, units = "in")
+
+```
+
+### Insulin resistance related cells
+
+```{r}
+cell_types.W.ir <- c("acinar_cell_of_salivary_gland__myoepithelial_cell",
+                     "cell_of_skeletal_muscle", 
+                     "pancreatic_alpha_cell__pancreatic_beta_cell", "smooth_muscle_cell")
+
+plot.scatter.ir <- df.scatter_fit %>% filter(Cell_type %in% cell_types.W.ir) %>%
+    mutate(Simplified_cell_types = factor(Simplified_cell_types, 
+                                          list.cell_type[cell_types.W.ir])) %>%
+    ggplot(aes(x = collectGA, y = Proportion)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ Simplified_cell_types, scales = "free_y", ncol = 4) +
+    theme_bw() + 
+    xlab("Gestation weeks") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    stat_cor(method = "spearman", size = 3, color = "black")
+plot.scatter.ir
+
+ggsave("plot/scatter_cor_ir_cells.pdf", 
+       height = 2, width = 8, units = "in")
+```
+
+### Pick the significant ones from the other cells
+
+Export the correlation results of all cells
+
+```{r}
+cell_types.W.others <- df.scatter_fit %>% 
+    # filter(!(Cell_type %in% cell_types.W.preg)) %>% 
+    # filter(!(Cell_type %in% cell_types.W.immu)) %>% 
+    pull("Cell_type") %>% unique()
+
+df.cor_sign <- data.frame()
+for (type in cell_types.W.others) {
+    tmp_df <- df.scatter_fit %>% filter(Cell_type == type)
+    y <- tmp_df$Proportion
+    x <- tmp_df$collectGA
+    
+    res_test <- cor.test(x, y, method = "spearman")
+    # if (res_test$p.value < 0.05)
+        df.cor_sign <- df.cor_sign %>% rbind(
+            data.frame(
+                Cell_type = type, 
+                r = res_test$estimate,
+                p = res_test$p.value
+            )
+        )
+}
+
+df.cor_sign$padj_BH <- df.cor_sign$p %>% p.adjust(method = "BH")
+df.cor_sign <- df.cor_sign %>% arrange(r)
+df.cor_sign$Cell_type <- factor(df.cor_sign$Cell_type, df.cor_sign$Cell_type)
+df.cor_sign %>% filter(padj_BH < 0.05)
+df.cor_sign %>% write_csv(file = "df.W06_all_cell.colletGA_cor.csv")
+```
+
+```{r}
+cell_types.W.others_sign <- df.cor_sign %>% filter(padj_BH < 0.05) %>% pull("Cell_type")
+
+plot.scatter.others_sign <- df.scatter_fit %>% 
+    filter(Cell_type %in% cell_types.W.others_sign) %>%
+    mutate(Cell_type = case_when(
+        Cell_type == "acinar_cell_of_salivary_gland__myoepithelial_cell" ~ "acinar_cell_of_salivary_gland__\nmyoepithelial_cell",
+        Cell_type == "ciliated_epithelial_cell__epithelial_cell_of_uterus" ~ "ciliated_epithelial_cell__\nepithelial_cell_of_uterus",
+        Cell_type == "fibroblast__mesenchymal_stem_cell" ~ "fibroblast__\nmesenchymal_stem_cell",
+        Cell_type == "ionocyte__luminal_epithelial_cell_of_mammary_gland" ~ "ionocyte__luminal_epithelial\n_cell_of_mammary_gland",
+        Cell_type == "luminal_cell_of_prostate_epithelium" ~ "luminal_cell_of_\nprostate_epithelium",
+        Cell_type == "mucus_secreting_cell__secretory_cell__tracheal_goblet_cell" ~ "mucus_secreting_cell__secretory_\ncell__tracheal_goblet_cell",
+        TRUE ~ Cell_type
+    )) %>%
+    ggplot(aes(x = collectGA, y = Proportion)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ Cell_type, scales = "free_y", ncol = 3) +
+    theme_bw() + 
+    xlab("Gestation weeks") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    stat_cor(method = "spearman", size = 3, color = "black")
+plot.scatter.others_sign
+
+ggsave("plot/scatter_cor_other_cell_sign.pdf",
+       height = 8, width = 8, units = "in")
+```
+
+## W06 GDM binary classification
+
+## visualize pregnancy distribution
+
+```{r}
+df.W06.GDMonly_vs_healthy %>% group_by(Pregnancy, Group) %>% 
+    summarise(count = n()) %>%
+    ggplot(aes(x = Pregnancy, y = count, fill = Group)) +
+    geom_col(width = 0.8, alpha=0.8, position = position_dodge(width = 0.8)) +
+    geom_text(aes(label = count),
+            vjust = -0.5, size = 2, color = "black",
+            position = position_dodge(width = 0.8)) +
+    theme_bw() +
+    labs(y = "Number of samples") +
+    scale_fill_brewer(palette = "Paired")
+
+ggsave("plot/plot_bar_count_W06.GDMonly_vs_healthy.pdf",
+       height = 3, width = 4.5)
+    
+```
+
+### Leave-One-Out Prediction Using Machine Learning
+
+We apply classification algorithms to distinguish GDM from controls using cell fraction data. Tested classifiers include SVM, RF, XGBoost, and LightGBM.
+
+ROC-AUC is used as the primary performance metric.
+
+```{r}
+lgbm <- list(type = "Classification",
+             library = c("lightgbm", "dplyr"),
+             loop = NULL)
+# 定义参数
+params.mat <- matrix(
+    c("objective", "character",
+      "metric", "character",
+      "num_leaves", "numeric",
+      "max_depth", "numeric",
+      "min_data_in_leaf", "numeric",
+      "min_sum_hessian_in_leaf", "numeric",
+      "learning_rate", "numeric",
+      "reg_alpha", "numeric",
+      "reg_lambda", "numeric",
+      "bagging_fraction", "numeric",
+      "bagging_freq", "numeric",
+      "feature_fraction", "numeric",
+      "num_iterations", "numeric"
+      ), 
+    byrow = TRUE, ncol = 2)
+lgbm$parameters <- params.mat %>% data.frame() %>% 
+    setNames(c("parameter", "class")) %>%
+    mutate(label = parameter)
+# 参数的grid
+lgbm$param_grid <- list(
+    objective = "binary",
+    # 目标函数
+    metric = "binary_logloss",
+    # 二分类问题的评估指标
+    # num_leaves = c(6, 11, 22),
+    num_leaves = c(11, 22),
+    # 叶子节点数
+    max_depth = c(5, 10),
+    # max_depth = c(2, 5, 10),
+    # 最大深度
+    min_data_in_leaf = 20,
+    # 每个叶子节点的最小样本数
+    min_sum_hessian_in_leaf = 0.001,
+    # 每个叶子节点的最小Hessian和
+    learning_rate = c(0.05, 0.1),
+    # 学习率
+    reg_alpha = c(0.1, 0.5),
+    # L1正则化系数
+    reg_lambda = 0,
+    # L2正则化系数
+    bagging_fraction = 1,
+    # 行采样比例
+    bagging_freq = 0,
+    # 行采样的频率
+    feature_fraction = 1,
+    # 列采样比例
+    num_iterations = 100
+    # 迭代次数
+) %>% expand.grid()
+
+# grid函数仅作占位符
+lgbm$grid <- function(x, y, len = NULL, search = "grid") {
+    lgbm$param_grid
+}
+
+# 定义训练方法
+lgbm.fit <- function(x, y, wts, param, lev, last, weights, classProbs) { 
+    # n_posi <- sum(y == lev[2])
+    params <- list(
+        verbose = -1,
+        # nthread = detectCores() - 1,
+        nthread = 1,
+        seed = 2025,
+        # scale_pos_weight = (length(y) - n_posi) / n_posi
+        scale_pos_weight = 1
+    )
+    for (i in 1: ncol(param)) {
+        param_name <- colnames(param)[i]
+        params[[param_name]] <- param[1, i]
+    }
+    
+    y <- factor(y, lev)
+    data_lgb <- lgb.Dataset(data = x %>% as.matrix(), label = as.integer(y) - 1)
+    
+    model.list <- list(model = lgb.train(params, data_lgb),
+                       factor_levels = lev)
+    # 将因子顺序保存在模型对象中
+    # model$factor_levels <- lev
+    # model
+}
+# 定义预测方法
+lgbm.pred <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    probs <- predict(modelFit$model, newdata %>% as.matrix())
+    factor(ifelse(probs >= 0.5, 2, 1),
+           labels = modelFit$factor_levels, levels = c(1, 2))
+    # ifelse(probs >= 0.5, modelFit$factor_levels[2], modelFit$factor_levels[1])
+    # ifelse(probs >= 0.5, 2, 1)
+}
+# 定义预测概率方法
+lgbm.prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    prob <- predict(modelFit$model, newdata %>% as.matrix())
+    data.frame(1 - prob, prob) %>% setNames(modelFit$factor_levels)
+        
+}
+# 模型从简单到复杂的参数排序
+lgbm.sort <- function(x) x[order(x$max_depth, x$num_leaves, x$num_iterations),]
+lgbm.levels <- function(x) x$factor_levels
+
+lgbm$fit <- lgbm.fit
+lgbm$predict <- lgbm.pred
+lgbm$prob <- lgbm.prob
+lgbm$sort <- lgbm.sort
+lgbm$levels <- lgbm.levels
+```
+
+Define the machine learning process
+
+```{r}
+z_score_standardize <- function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}
+
+# 分类器模型验证全流程
+tenFolds_pred <- function(df, method, caret_method = NULL, name = NULL, grid_len = 1) {
+    # df <- df.frac.covid
+    # method <- "LightGBM"
+    
+    # 对数值列z-score
+    # df.zscore <- df %>%
+    #   mutate(across(where(is.numeric), z_score_standardize))
+    df <- df
+    method <- method
+    caret_method <- caret_method
+    grid_len <- grid_len
+    
+    set.seed(2025)
+    folds <- createFolds(df$Group, k = 20)
+    
+    res.list <- list()
+    # if (method == "LightGBM") {
+    #     for (i in 1:nrow(df)) {
+    # 
+    #         res.list[i] <- train_and_evaluate(df, i, method)
+    #     }
+    # } else {
+        cl <- makeCluster(detectCores() - 1)
+        clusterEvalQ(cl, {
+            library(dplyr)
+            library(caret)
+            library(lightgbm)
+        })
+        clusterExport(cl, c("train_and_evaluate", "lgbm"))
+    
+        # 并行计算预测结果
+        res.list <- parLapply(cl, 1:length(folds), function(i) {
+            train_and_evaluate(df, folds[[i]], method, caret_method, grid_len) %>%
+                mutate(Fold = i)
+        })
+        # 停止集群
+        stopCluster(cl)
+    # }
+    
+    res.df <- do.call(rbind, res.list)
+    res.df <- res.df %>% cbind(df)
+    
+    if (!is.null(name)) {
+        res.df %>% write_tsv(paste("classification/W06/df.model", name, method, "tsv", sep = "."))
+    }
+    res.df
+}
+
+tenFolds_auc <- function(df, method) {
+    res.df <- tenFolds_pred(df, method)
+    
+    roc_obj <- roc(df$Group, res.df$predictions)
+    auc(roc_obj)
+}
+
+train_and_evaluate <- function(df, indices, method, caret_method = NULL, grid_len = 1) {
+    
+    df$Group <- factor(df$Group)
+
+    # 分层抽样划分数据集
+    train_data <- df[-indices, ]
+    test_data <- df[indices, ]
+    
+    train_features <- train_data %>% select(-Sample, -Group)
+    test_features <- test_data %>% select(-Sample, -Group)
+    
+    center <- colMeans(train_features)
+    scale <- apply(train_features, 2, sd)
+    
+    train_scaled <- as.data.frame(sweep(sweep(train_features, 2, center, "-"), 2, scale, "/"))
+    test_scaled <- as.data.frame(sweep(sweep(test_features, 2, center, "-"), 2, scale, "/"))
+    
+    set.seed(2025)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5,
+                            classProbs = TRUE, summaryFunction = twoClassSummary,
+                            search = "grid")
+    
+    # Method <- character()
+    param_grid <- NULL
+    if (method == "SVM") { # SVM
+        Method <- "svmRadial"
+    } else if (method == "RF") { #  随机森林
+        Method <- "rf"
+    } else if (method == "XGBoost") {
+        Method <- "xgbTree"
+        len <- grid_len
+        # len <- 2
+        param_grid <- expand.grid(
+            max_depth = seq(1, len), 
+            nrounds = floor((1:len) * 50), 
+            eta = c(0.3, 0.4), 
+            gamma = 0, 
+            colsample_bytree = c(0.6, 0.8), 
+            min_child_weight = c(1), 
+            subsample = seq(0.5, 1, length = len)
+            )
+    } else if (method == "LightGBM") {
+        Method <- lgbm
+    }
+    
+    if (!is.null(caret_method)) {
+        Method <- caret_method
+    }
+    
+    model <- caret::train(
+          x = train_scaled,
+          y = train_data$Group,
+          method = Method,
+          trControl = control,
+          tuneGrid = param_grid,
+          metric = "ROC"
+        )
+    
+    pred <- predict(model,
+                    newdata = test_scaled,
+                    type = "prob")[, 2]
+    Method <- if (Method %>% is.character()) {
+        Method
+    } else {
+        "lightgbm"
+    }
+    model$bestTune %>% 
+        mutate(predictions = pred, method = Method, preg_group = levels(df$Group)[2]) %>%
+        select(predictions, preg_group, method, everything()) %>%
+        return()
+}
+
+# 分类器模型验证全流程
+leaveone_pred <- function(df, method, caret_method = NULL, name = NULL, grid_len = 1) {
+    # df <- df.frac.covid
+    # method <- "LightGBM"
+    
+    # 对数值列z-score
+    # df.zscore <- df %>%
+    #   mutate(across(where(is.numeric), z_score_standardize))
+    df <- df
+    method <- method
+    caret_method <- caret_method
+    grid_len <- grid_len
+    
+    res.list <- list()
+    # if (method == "LightGBM") {
+    #     for (i in 1:nrow(df)) {
+    # 
+    #         res.list[i] <- train_and_evaluate(df, i, method)
+    #     }
+    # } else {
+        cl <- makeCluster(detectCores() - 1)
+        clusterEvalQ(cl, {
+            library(dplyr)
+            library(caret)
+            library(lightgbm)
+        })
+        clusterExport(cl, c("train_and_evaluate", "lgbm"))
+    
+        # 并行计算预测结果
+        res.list <- parLapply(cl, 1:nrow(df), function(i) {
+            train_and_evaluate(df, i, method, caret_method, grid_len)
+        })
+        # 停止集群
+        stopCluster(cl)
+    # }
+    
+    res.df <- do.call(rbind, res.list)
+    res.df <- res.df %>% cbind(df)
+    
+    if (!is.null(name)) {
+        res.df %>% write_tsv(paste("classification/W06/df.model", name, method, "tsv", sep = "."))
+    }
+    res.df
+}
+
+leaveone_auc <- function(df, method) {
+    res.df <- leaveone_pred(df, method)
+    
+    roc_obj <- roc(df$Group, res.df$predictions)
+    pROC::auc(roc_obj)
+}
+
+# df.W06.GDMonly_vs_healthy %>%
+#     select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data) %>%
+#     mutate(Sample = NA) -> df
+# method <- "SVM"
+# caret_method <- NULL
+# grid_len <- 1
+# tenFolds_pred(df, method)
+```
+
+test
+
+```{r}
+# methods <- c("SVM", "RF", "XGBoost", "LightGBM")
+methods <- c("SVM")
+df.gdm.auc <- data.frame()
+for (method in methods) {
+    tmp_df <- rbind(
+        data.frame(
+            Method = method,
+            Dataset = "Early", 
+            AUC = df.W06.GDMonly_vs_healthy %>%
+                filter(Pregnancy == "first trimester") %>%
+                select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+                mutate(Sample = NA) %>% leaveone_auc(method)
+        )
+        # data.frame(
+        #     Method = method,
+        #     Dataset = "Middle",
+        #     AUC = df.W06.GDMonly_vs_healthy %>%
+        #         filter(Pregnancy == "second trimester") %>%
+        #         select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+        #         mutate(Sample = NA) %>% leaveone_auc(method)
+        # )
+        # data.frame(
+        #     Method = method,
+        #     Dataset = "Late", 
+        #     AUC = df.W06.GDMonly_vs_healthy %>%
+        #         filter(Pregnancy == "third trimester") %>%
+        #         select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+        #         mutate(Sample = NA) %>% leaveone_auc(method)
+        # ),
+        # data.frame(
+        #     Method = method,
+        #     Dataset = "Early diff", 
+        #     AUC = df.W06.GDMonly_vs_healthy %>%
+        #         filter(Pregnancy == "first trimester") %>%
+        #         select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+        #         mutate(Sample = NA) %>% 
+        #         select(Group, Sample, 
+        #                df.W06.GDM.test.sign %>% 
+        #                    filter(Pregnancy == "first trimester") %>%
+        #                    pull("Cell_type")) %>%
+        #         leaveone_auc(method)
+        # ),
+        # data.frame(
+        #     Method = method,
+        #     Dataset = "Middle diff", 
+        #     AUC = df.W06.GDMonly_vs_healthy %>%
+        #         filter(Pregnancy == "second trimester") %>%
+        #         select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+        #         mutate(Sample = NA) %>% 
+        #         select(Group, Sample, 
+        #                df.W06.GDM.test.sign %>% 
+        #                    filter(Pregnancy == "second trimester") %>%
+        #                    pull("Cell_type")) %>%
+        #         leaveone_auc(method)
+        # ),
+        # data.frame(
+        #     Method = method,
+        #     Dataset = "Late diff", 
+        #     AUC = df.W06.GDMonly_vs_healthy %>%
+        #         filter(Pregnancy == "third trimester") %>%
+        #         select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+        #         mutate(Sample = NA) %>% 
+        #         select(Group, Sample, 
+        #                df.W06.GDM.test.sign %>% 
+        #                    filter(Pregnancy == "third trimester") %>%
+        #                    pull("Cell_type")) %>%
+        #         leaveone_auc(method)
+        # )
+    )
+    
+    df.gdm.auc <- df.gdm.auc %>% rbind(tmp_df)
+}
+
+df.gdm.auc %>% head()
+```
+
+draw
+
+```{r}
+tmp_df <- df.gdm.auc
+tmp_df$AUC_label <- label_number(accuracy = 0.0001)(tmp_df$AUC)
+
+plot_pe_auc <- ggplot(tmp_df, aes(x = Method, y = AUC, fill = Dataset)) +
+    geom_col(position = position_dodge2(), width = 0.8) +
+    theme_bw() +
+    theme(legend.position = "top") +
+    geom_text(
+        aes(label = AUC_label),
+        position = position_dodge2(width = 0.8),
+        vjust = -0.5,
+        # 调整标签位置
+        size = 3
+    ) +
+    ylim(0 , 1)
+
+
+print(plot_pe_auc)
+ggsave("plot/plot_auc_pe.pdf", width = 5, height = 3)
+```
+
+Calculate and save the modeling results
+
+```{r}
+df.model.list <- list()
+df.gdm_early <- df.W06.GDMonly_vs_healthy %>%
+    filter(Pregnancy == "first trimester") %>%
+    mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+    select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old)
+
+df.gdm_middle <- df.W06.GDMonly_vs_healthy %>%
+    filter(Pregnancy == "second trimester") %>%
+    mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+    select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old)
+
+df.gdm_late <- df.W06.GDMonly_vs_healthy %>%
+    filter(Pregnancy == "third trimester") %>%
+    mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+    select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old)
+
+# df.gdm_early_diff <- df.W06.GDMonly_vs_healthy %>%
+#     filter(Pregnancy == "first trimester") %>%
+#     mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+#     select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+#     select(
+#         Group, Sample,
+#         df.W06.GDM.test.sign %>%
+#             filter(Pregnancy == "first trimester") %>%
+#             pull("Cell_type")
+#     )
+# 
+# df.gdm_middle_diff <- df.W06.GDMonly_vs_healthy %>%
+#     filter(Pregnancy == "second trimester") %>%
+#     mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+#     select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+#     select(
+#         Group, Sample,
+#         df.W06.GDM.test.sign %>%
+#             filter(Pregnancy == "second trimester") %>%
+#             pull("Cell_type")
+#     )
+# 
+# df.gdm_late_diff <- df.W06.GDMonly_vs_healthy %>%
+#     filter(Pregnancy == "third trimester") %>%
+#     mutate(Sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>%
+#     select(-collectGA, -Info, -Source, -Pregnancy, -Family, -Data, -Pregnancy_old) %>%
+#     select(
+#         Group, Sample,
+#         df.W06.GDM.test.sign %>%
+#             filter(Pregnancy == "third trimester") %>%
+#             pull("Cell_type")
+#     )
+
+df.model.list[["gdm_early"]][["SVM"]] <- 
+    leaveone_pred(df.gdm_early, "SVM", "svmRadial", "gdm_early")
+# df.model.list[["gdm_early_diff"]][["SVM"]] <- 
+#     leaveone_pred(df.gdm_early_diff, "SVM", "svmPoly", "gdm_early_diff")
+# df.model.list[["gdm_early"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_early, "RF", "cforest", "gdm_early")
+# df.model.list[["gdm_early_diff"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_early_diff, "RF", "rf", "gdm_early_diff")
+# df.model.list[["gdm_early"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_early, "XGBoost", "xgbTree", "gdm_early", 1)
+# df.model.list[["gdm_early_diff"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_early_diff, "XGBoost", "xgbTree", "gdm_early_diff", 1)
+# df.model.list[["gdm_early"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_early, "LightGBM", NULL, "gdm_early")
+# df.model.list[["gdm_early_diff"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_early_diff, "LightGBM", NULL, "gdm_early_diff")
+# 
+# 
+# df.model.list[["gdm_middle"]][["SVM"]] <- 
+#     leaveone_pred(df.gdm_middle, "SVM", "svmPoly", "gdm_middle")
+# df.model.list[["gdm_middle_diff"]][["SVM"]] <- 
+#     leaveone_pred(df.gdm_middle_diff, "SVM", "svmPoly", "gdm_middle_diff")
+# df.model.list[["gdm_middle"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_middle, "RF", "parRF", "gdm_middle")
+# df.model.list[["gdm_middle_diff"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_middle_diff, "RF", "cforest", "gdm_middle_diff")
+# df.model.list[["gdm_middle"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_middle, "XGBoost", "xgbTree", "gdm_middle", 3)
+# df.model.list[["gdm_middle_diff"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_middle_diff, "XGBoost", "xgbTree", "gdm_middle_diff", 2)
+# df.model.list[["gdm_middle"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_middle, "LightGBM", NULL, "gdm_middle")
+# df.model.list[["gdm_middle_diff"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_middle_diff, "LightGBM", NULL, "gdm_middle_diff")
+# 
+# df.model.list[["gdm_late"]][["SVM"]] <- 
+#     leaveone_pred(df.gdm_late, "SVM", "svmPoly", "gdm_late")
+# df.model.list[["gdm_late_diff"]][["SVM"]] <- 
+#     leaveone_pred(df.gdm_late_diff, "SVM", "svmPoly", "gdm_late_diff")
+# df.model.list[["gdm_late"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_late, "RF", "wsrf", "gdm_late")
+# df.model.list[["gdm_late_diff"]][["RF"]] <- 
+#     leaveone_pred(df.gdm_late_diff, "RF", "rf", "gdm_late_diff")
+# df.model.list[["gdm_late"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_late, "XGBoost", "xgbTree", "gdm_late", 2)
+# df.model.list[["gdm_late_diff"]][["XGBoost"]] <- 
+#     leaveone_pred(df.gdm_late_diff, "XGBoost", "xgbTree", "gdm_late_diff", 1)
+# df.model.list[["gdm_late"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_late, "LightGBM", NULL, "gdm_late")
+# df.model.list[["gdm_late_diff"]][["LightGBM"]] <- 
+#     leaveone_pred(df.gdm_late_diff, "LightGBM", NULL, "gdm_late_diff")
+
+saveRDS(df.model.list, file = "classification/W06/df.model.list.RDS")
+```
+
+ROC plot
+
+```{r}
+df.model.list <- readRDS("classification/W06/df.model.list.RDS")
+draw_ggroc <- function(roc.list, feature, position) {
+    ci.auc <- roc.list$SVM %>% ci.auc()
+    
+    ggroc(roc.list,
+      legacy.axes = TRUE, size = 1, alpha = 0.9) +
+        geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), 
+                     color="darkgrey", linetype="dashed") +
+        theme_bw() + 
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                SVM = "#1F78B4"
+                # RF = "#1F78B4",
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                SVM = paste0(
+                    "SVM AUC: ", round(ci.auc[2], 4), "\n(95% CI:", 
+                    round(ci.auc[1], 4), "-", round(ci.auc[3], 4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", roc.list$RF %>% auc() %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", roc.list$XGBoost %>% auc() %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", roc.list$LightGBM %>% auc() %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        labs(color = feature)
+}
+
+lapply(df.model.list[["gdm_early"]], function(df) roc(df$Group, df$predictions)) %>%
+    draw_ggroc("Cell fractions", c(0.6, 0.15)) -> p1 
+# lapply(df.model.list[["gdm_early_diff"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Differential cell fractions", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot/plot_roc_GDM_early.pdf", width = 8, height = 4)
+# 
+# lapply(df.model.list[["gdm_middle"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Cell fractions", c(0.7, 0.22)) -> p1 
+# lapply(df.model.list[["gdm_middle_diff"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Differential cell fractions", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot/plot_roc_GDM_middle.pdf", width = 8, height = 4)
+# 
+# lapply(df.model.list[["gdm_late"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Cell fractions", c(0.7, 0.22)) -> p1 
+# lapply(df.model.list[["gdm_late_diff"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Differential cell fractions", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot/plot_roc_GDM_late.pdf", width = 8, height = 4)
+p1
+```
+
+AUPRC
+
+```{r}
+df.model.list <- readRDS("classification/W06/df.model.list.RDS")
+# class1 <- "CTRL"
+# class0 <- "GDM"
+# df_list <- df.model.list[["gdm_early_diff"]]
+# feature <- "Cell fraction"
+# position <- c(0.7, 0.22)
+
+# 这里class0是正类
+draw_prroc <- function(df_list, class1, class0, feature, position) {
+    auc_list <- list()
+    ci_list <- list()
+    df_curve <- data.frame()
+    
+    
+    # methods <- c("SVM", "RF", "XGBoost", "LightGBM")
+    methods <- c("SVM")
+    # me <- "SVM"
+    for (me in methods) {
+        df_tmp <- df_list[[me]]
+        yintercept = sum(df_tmp$Group == class0) / nrow(df_tmp)
+        
+        if (df_tmp[df_tmp$Group == class0, "predictions"] %>% mean() < 
+            df_tmp[df_tmp$Group == class1, "predictions"] %>% mean())
+            df_tmp$predictions <- 1 - df_tmp$predictions
+        
+        pr_curve1 <- pr.curve(scores.class0 = df_tmp$predictions[df_tmp$Group == class0],
+                     scores.class1 = df_tmp$predictions[df_tmp$Group == class1], 
+                     curve = TRUE)
+        
+        # pr_curve2 <- pr.curve(scores.class0 = 1 - df_tmp$predictions[df_tmp$Group == class0],
+        #              scores.class1 = 1 - df_tmp$predictions[df_tmp$Group == class1],
+        #              curve = TRUE)
+        # if (pr_curve2$auc.integral > pr_curve1$auc.integral)
+        #     pr_curve1 <- pr_curve2
+        
+        auc_list[[me]] <- pr_curve1$auc.integral
+        
+        # 95% CI
+        B <- 2000
+        list.auprc <- numeric(B)
+        for (b in 1: B) {
+            df.sub <- df_tmp %>% group_by("Group") %>% 
+                sample_n(size = n(), replace = TRUE)
+            
+            res <- pr.curve(scores.class0 = df.sub$predictions[df.sub$Group == class0],
+                     scores.class1 = df.sub$predictions[df.sub$Group == class1], 
+                     curve = FALSE)
+            
+            list.auprc[b] <- res$auc.integral
+        }
+        
+        ci <- quantile(list.auprc, probs = c(0.025, 0.975), na.rm = TRUE)
+        ci_list[[me]] <- ci
+        
+       
+        
+        df_curve <- pr_curve1$curve %>% as.data.frame() %>% 
+            setNames(c("recall", "precision", "cutoff")) %>%
+            mutate(cutoff = NULL, "method" = factor(me, methods)) %>%
+            rbind(df_curve)
+    }
+    
+    df_curve %>% arrange(desc(row_number())) %>%
+        ggplot(aes(x = recall, y = precision, color = method)) +
+        geom_line(size = 1, alpha = 0.9) +
+        theme_bw() +
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                SVM = "#1F78B4"
+                # RF = "#1F78B4",
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                SVM = paste0(
+                    "SVM AUC: ", auc_list[["SVM"]] %>% round(4), "\n(95% CI: ", 
+                    ci_list[["SVM"]][1] %>% round(4), "-", 
+                    ci_list[["SVM"]][2] %>% round(4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", auc_list[["RF"]] %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", auc_list[["XGBoost"]] %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", auc_list[["LightGBM"]] %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        # ylim(c(0, 1)) +
+        scale_y_continuous(limits = c(0, 1)) +
+        labs(color = feature) +
+        geom_segment(aes(x = 0, xend = 1, y = yintercept, yend = yintercept), 
+                     color="darkgrey", linetype="dashed")
+}
+
+# p1 <- df.model.list[["gdm_early"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Cell fractions", c(0.7, 0.22))
+# p2 <- df.model.list[["gdm_early_diff"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Differential cell fractions", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot/plot_prroc_GDM_early.pdf", width = 8, height = 4)
+# 
+# p1 <- df.model.list[["gdm_middle"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Cell fractions", c(0.7, 0.22))
+# p2 <- df.model.list[["gdm_middle_diff"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Differential cell fractions", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot/plot_prroc_GDM_middle.pdf", width = 8, height = 4)
+# 
+# p1 <- df.model.list[["gdm_late"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Cell fractions", c(0.7, 0.22))
+# p2 <- df.model.list[["gdm_late_diff"]] %>% 
+#     draw_prroc("GDM", "CTRL", "Differential cell fractions", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot/plot_prroc_GDM_late.pdf", width = 8, height = 4)
+p2 <- df.model.list[["gdm_early"]] %>% 
+    draw_prroc("CTRL", "GDM", "Cell fractions", c(0.6, 0.15))
+p1 + p2
+ggsave(filename = "plot/plot_pr+roc_GDM_early.pdf", width = 8, height = 4)
+
+
+```
+
+### Risk Scores vs Clinical Traits
+
+Predictive risk scores for GDM are correlated with clinical traits such as OGTT results, age, parity, delivery mode, and birth outcomes.
+
+Significant associations are reported.
+
+```{r}
+df.model.list <- readRDS("classification/W06/df.model.list.RDS")
+
+
+df.gdm_early <- df.W06.GDMonly_vs_healthy %>%
+                filter(Pregnancy == "first trimester") %>% 
+    select(-all_of(cell_types.W), -Group) %>% 
+    mutate(sample = paste(Info, Source, Pregnancy_old, Family, sep = "-")) %>% 
+    cbind(df.model.list[["gdm_early"]][["SVM"]] %>% mutate(predictions = 1 - predictions)) %>%
+    left_join(df.W06.blood_test, by = "sample")
+
+df.gdm_early
+```
+
+Because GLU is only detected in the middle term, it needs to be extracted separately.
+
+```{r}
+#| eval: false
+#| include: false
+# df.W06.blood_test.ogtt <- read_excel("市妇幼临床信息提取.xlsx")
+df.W06.blood_test.ogtt <- read_excel("GDM_groups.xlsx", 
+    col_types = c("text", "text", "text", 
+        "numeric", "numeric", "numeric", 
+        "numeric", "numeric", "numeric", 
+        "text")) %>%
+    dplyr::rename(Family = "sampleID")
+
+df.gdm_early <- df.gdm_early %>% select(-GLU0, -GLU1, -Glu2) %>%
+    left_join(df.W06.blood_test.ogtt, by = "Family", multiple = "last") %>%
+    mutate("OGTT-AUC" = as.numeric(GLU1) + (as.numeric(GLU0) + as.numeric(Glu2))/2)
+
+if (!("OGTT-AUC" %in% cli_types)) {
+    cli_types <- c(cli_types, "OGTT-AUC")
+    cli_types.explain["OGTT-AUC"] <- "OGTT曲线下面积"
+}
+```
+
+Start comparing relevance one by one
+
+```{r}
+sign_symbol <- function(x) {
+    ifelse(x > 0.05, NA, ifelse(x > 0.01, "*", ifelse(x > 0.001, "**", "***")))
+}
+
+list.cli_omit <- list()
+
+df.pred_cli.cor <- data.frame()
+for (it in cli_types) {
+    df <- df.gdm_early %>% select(sample, predictions, all_of(it)) %>% 
+        dplyr::rename(item = it) %>%
+        mutate(item = as.numeric(item))
+    
+    list.cli_omit[[it]] <- df %>% 
+        filter(is.na(item) | is.na(predictions) | is.na(sample)) %>%
+        pull("sample")
+    df <- df %>% na.omit()
+    
+    
+    x <- df %>% pull("predictions")
+    y <- df %>% pull("item")
+    
+    n <- nrow(df)
+    if (n <= 5) next
+    
+    pearson <- stats::cor.test(x, y, method = "pearson")
+    spearman <- stats::cor.test(x, y, method = "spearman")
+    kendall <- stats::cor.test(x, y, method = "kendall")
+    
+    df <- data.frame(
+        n = n,
+        pred_mean = mean(x),
+        pred_median = median(x),
+        clinical_item = it,
+        clinical_item_mean = mean(y),
+        clinical_item_median = median(y),
+        cor_pearson = pearson$estimate,
+        p_pearson = pearson$p.value,
+        cor_spearman = spearman$estimate,
+        p_spearman = spearman$p.value,
+        cor_kendall = kendall$estimate,
+        p_kendall = kendall$p.value,
+        sign_pearson = sign_symbol(pearson$p.value),
+        sign_spearman = sign_symbol(spearman$p.value),
+        sign_kendall = sign_symbol(kendall$p.value)
+    )
+    
+    df.pred_cli.cor <- df.pred_cli.cor %>% rbind(df)
+}
+
+df.pred_cli.cor <- df.pred_cli.cor %>% mutate(clinical_item_zh = cli_types.explain[clinical_item])
+
+df.pred_cli.cor %>% dim()
+
+df.pred_cli.cor %>% write_csv("df.pred_cli.cor.csv")
+
+df.pred_cli.cor.filter <- df.pred_cli.cor %>%
+    filter(!is.na(sign_pearson) | !is.na(sign_spearman) | !is.na(sign_kendall) |
+        abs(cor_pearson) > 0.1 | abs(cor_spearman) > 0.1 | abs(cor_kendall) > 0.1)
+
+df.pred_cli.cor.filter %>% write_csv("df.pred_cli.cor.filter.csv")
+```
+
+Visualize GLU
+
+```{r}
+red <- "#E31A1C"
+
+p1 <- df.gdm_early %>%
+    ggplot(aes(fill = Group, y = GLU0)) +
+    geom_boxplot() +
+    geom_hline(yintercept = 5.1, linetype = "dashed", color = red) +
+    theme_bw() +
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+p2 <- df.gdm_early %>%
+    ggplot(aes(fill = Group, y = GLU1)) +
+    geom_boxplot() +
+    geom_hline(yintercept = 10.0, linetype = "dashed", color = red) +
+    theme_bw() +
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+p3 <- df.gdm_early %>%
+    ggplot(aes(fill = Group, y = Glu2)) +
+    geom_boxplot() +
+    geom_hline(yintercept = 8.5, linetype = "dashed", color = red) +
+    theme_bw() +
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+
+p4 <- df.gdm_early %>%
+    ggplot(aes(fill = Group, y = `OGTT-AUC`)) +
+    geom_boxplot() +
+    theme_bw() +
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+        axis.title.x = element_blank(),
+        axis.text.x = element_blank(),
+        axis.ticks.x = element_blank()
+    )
+# "#A6CEE3" "#1F78B4" "#B2DF8A" "#33A02C" "#FB9A99" "#E31A1C" "#FDBF6F" "#FF7F00" "#CAB2D6" "#6A3D9A" "#FFFF99" "#B15928"
+# ggpubr::get_legend(p1, "top") %>% as_ggplot() -> legend
+# # p1 <- p1 + theme(legend.position = "none")
+# # p2 <- p2 + theme(legend.position = "none")
+# # p3 <- p3 + theme(legend.position = "none")
+# # p4 <- p4 + theme(legend.position = "none")
+# legend / (p1 + p2 + p3 + p4)
+(p1 + p2 + p3 + p4) + plot_layout(guides = "collect")
+
+for (item in c("GLU0", "GLU1", "Glu2", "OGTT-AUC")) {
+    
+    df_tmp <- df.gdm_early %>% dplyr::rename(cli_item = item)
+    # x <- df.gdm_early %>% filter(Group == "CTRL") %>% pull(item)
+    # y <- df.gdm_early %>% filter(Group == "GDM") %>% pull(item)
+    
+    res <- wilcox.test(cli_item ~ Group, data = df_tmp)
+    paste(item, res$p.value) %>% print()
+}
+
+
+ggsave("plot/plot_box_gdm_ctrl_ogtt.pdf", width = 4, height = 3)
+```
+
+### Scatter plot and fitted line
+
+```{r}
+cli_item.selected <- c("GLU0", "GLU1", "Glu2", "OGTT-AUC", "PCT")
+
+plot.scatter.risk_cli <- df.gdm_early %>% 
+    select(predictions, Group, all_of(cli_item.selected)) %>%
+    gather(key = "cli_item", value = "value", -predictions, -Group) %>%
+    mutate(cli_item = factor(cli_item, cli_item.selected),
+           value = value %>% as.numeric(),
+           predictions_std = (predictions - min(predictions)) / (max(predictions) - min(predictions))) %>%
+    ggplot(aes(x = predictions, y = value)) + 
+    geom_point(color = "blue", alpha = 0.2, size = 1) +
+    facet_wrap(~ cli_item, scales = "free_y", ncol = 3) +
+    theme_bw() + 
+    labs(x = "Risk scores of GDM", y = "Values of clinical traits") +
+    geom_smooth(method = lm , color = "red", fill = "#69b3a2", se = TRUE, n = 500) +
+    # coord_cartesian(xlim = c(0.79, 0.85)) +
+    stat_cor(method = "spearman", size = 3, color = "black")
+plot.scatter.risk_cli
+
+ggsave("plot/scatter_cor_GDMrisk_cli.pdf", 
+       height = 3.5, width = 5, units = "in")
+```
+
+### Predicting Gestational Age From Cell Fractions
+
+Using regression models (e.g., Random Forest, LASSO), we attempt to predict gestational age based on cell-type proportions.
+
+Model performance is assessed using RMSE and R-squared metrics.
+
+```{r}
+df.pred_week <- df.W %>% 
+    filter(Source == "PR", Pregnancy %in% c("A", "B", "C"), Data == "W06") %>%
+    filter(!(collectGA %>% is.na())) %>%
+    select(collectGA, cell_types.W)
+
+train_index <- createDataPartition(df.pred_week$collectGA, p = 0.7, list = FALSE)
+train_data <- df.pred_week[train_index, ]
+test_data <- df.pred_week[-train_index, ]
+# x <- df.pred_week %>% select(-collectGA) %>% as.matrix()
+# Y <- df.pred_week$collectGA
+# model.pred_week <- lm(collectGA ~ ., data = df.pred_week)
+# predictions <- predict(model.pred_week, data = x)
+
+control <- trainControl(
+  method = "repeatedcv",
+  number = 5,
+  search = "grid",
+  repeats = 10,
+  allowParallel = TRUE
+)
+
+
+# 训练随机森林模型
+set.seed(123)
+rf_model <- train(
+  collectGA ~ .,
+  data = train_data,
+  method = "rf",
+  trControl = control,
+  # tuneGrid = tune_grid,
+  importance = TRUE
+)
+predictions <- predict(rf_model, newdata = test_data)
+
+plot_data <- data.frame(Actual = test_data$collectGA, Predicted = predictions)
+
+# 绘制实际值与预测值的散点图
+ggplot(plot_data, aes(x = Actual, y = predictions)) +
+    geom_point(color = "blue",
+               alpha = 0.2,
+               size = 1) +
+    geom_smooth(
+        method = lm ,
+        color = "red",
+        fill = "#69b3a2",
+        se = TRUE,
+        n = 500
+    ) +
+    stat_cor(method = "pearson",
+             size = 3,
+             color = "black") +
+    geom_abline(
+        intercept = 0,
+        slope = 1,
+        color = "red",
+        linetype = "dashed"
+    ) +
+    labs(x = "Actual gestation weeks", y = "Predicted gestation weeks") +
+    theme_bw() -> plot.pred_week
+
+plot.pred_week
+ggsave(file = "plot/scatter_pred_week.pdf", width = 3, height = 3)
+```
+
+## W06 CTRL group predicted gestational week
+
+```{r}
+df.W06.CTRL <- df.W06.GDMonly_vs_healthy %>% filter(Group == "CTRL") %>% 
+    select(collectGA, all_of(cell_types.W))
+
+df.W06.CTRL %>% 
+    ggplot(aes(x = collectGA)) +
+    geom_density()
+
+df.W06.CTRL %>% nrow()
+```
+
+Ten-fold cross-validation, stepwise regression parameter tuning on the training set, and performance testing on the test set
+
+```{r}
+set.seed(2025)
+# 定义10折交叉验证控制
+ctrl <- trainControl(method = "repeatedcv", number = 10, repeats = 10,
+                     returnData = TRUE)
+# 创建空向量保存真实值与预测值
+true_values <- c()
+predicted_values <- c()
+# 进行手动10折交叉验证
+folds <- createFolds(df.W06.CTRL$collectGA, k = 10)
+for (i in seq_along(folds)) {
+  
+  # 分割训练集和测试集
+  test_index <- folds[[i]]
+  train_data <- df.W06.CTRL[-test_index, ]
+  test_data  <- df.W06.CTRL[test_index, ]
+  
+  
+  # 
+  # # Stepwise Selection: 先在训练集上做逐步回归筛选变量
+  # full_model <- lm(collectGA ~ ., data = train_data)
+  # step_model <- step(full_model, direction = "both", trace = 0)
+  # # 提取最终使用的变量名
+  # selected_vars <- attr(terms(step_model), "term.labels")
+  
+  
+  # 获取所有自变量和响应变量
+  x_train <- as.matrix(train_data[, !names(train_data) %in% "collectGA"])
+  y_train <- train_data$collectGA
+  
+  # Step 1: LASSO 回归 + CV 筛选特征
+  cv_lasso <- cv.glmnet(x = x_train, y = y_train, alpha = 1, nfolds = 10)
+  coef_best_lambda <- coef(cv_lasso, s = "lambda.min")[, 1]
+  
+  # 提取非零系数对应的变量名
+  selected_vars <- names(coef_best_lambda)[coef_best_lambda != 0]
+  selected_vars <- selected_vars[selected_vars != "(Intercept)"]  # 去掉截距项
+  
+  
+  
+  # 如果没有变量被选中，则跳过这一步
+  if (length(selected_vars) == 0) {
+    cat("No variables selected in fold", i, "\n")
+    break()
+  } else {
+      
+      # selected_vars <- c("early_EVT", "early_SCT", "early_VCT", "late_EVT", "late_SCT", "late_VCT")
+      
+    # 构造公式
+    form <- as.formula(paste("collectGA ~", paste(selected_vars, collapse = "+")))
+    
+    # 获取需要标准化的列名（只保留 selected_vars）
+    vars_to_scale <- selected_vars
+    
+    # 计算训练集标准化参数（仅基于训练集）
+    preproc <- preProcess(train_data[, vars_to_scale], method = c("center", "scale"))
+    
+    # 应用标准化到训练集和测试集
+    train_scaled <- predict(preproc, train_data[, vars_to_scale])
+    test_scaled  <- predict(preproc, test_data[, vars_to_scale])
+    
+    # 合并目标变量 back
+    train_processed <- cbind(train_scaled, collectGA = train_data$collectGA)
+    test_processed  <- cbind(test_scaled, collectGA = test_data$collectGA)
+    
+    # 使用 caret 训练模型并调参（例如 glmnet）
+    model <- train(
+      form,
+      data = train_processed,
+      method = "cforest",
+      trControl = ctrl,
+      na.action = na.omit
+    )
+    
+    # 预测测试集
+    predicted <- predict(model, newdata = test_processed)
+  }
+  # 收集预测值和真实值
+  true_values <- c(true_values, test_data$collectGA)
+  predicted_values <- c(predicted_values, predicted)
+}
+
+# 最终评估
+results <- postResample(predicted_values, true_values)
+print(paste("RMSE:", results[1]))
+print(paste("R-squared:", results[2]))
+# 可视化
+plot(true_values, predicted_values, main = "True vs Predicted")
+abline(a = 0, b = 1, col = "red")
+```
+
+## Output the clinical information of quality control samples, Case, and CTRL samples dimensions
+
+```{r}
+list.familyid.passqc <- samples.afterQC_W06 %>% strsplit("-", fixed = TRUE) %>% 
+    lapply(function(x) x[4]) %>% unlist() %>% unique()
+
+list.familyid.passqc %>% length()
+list.familyid.GDM_only %>% length()
+list.familyid.ctrl %>% length()
+```
+
+import and process data
+
+```{r}
+#| eval: false
+#| include: false
+list.keep <- c("Family", "OGTTweek", "GLU0", "GLU1", "Glu2")
+
+df.samples_cli <- read_excel("市妇幼RNA临床(2).xlsx", 
+    sheet = "Sheet1", skip = 1) %>% 
+    select(Family = familyID, age = "年龄", nulliparous = "孕产史", gender = "婴儿性别", 
+           delivery = "分娩方式", GAdelivery = "实际分娩孕周") %>%
+    distinct(Family, .keep_all = TRUE) %>%
+    left_join(df.W06.blood_test.ogtt %>% select(all_of(list.keep)), 
+              by = "Family", multiple = "last") %>%
+    mutate("OGTT-AUC" = as.numeric(GLU1) + (as.numeric(GLU0) + as.numeric(Glu2))/2) %>%
+    mutate(nulliparous = case_when(
+        nulliparous %>% str_detect("产0") ~ "nulliparous",
+        nulliparous %>% str_detect("孕") ~ "multiparous",
+        TRUE ~ NA
+    ), delivery = case_when(
+        delivery %>% str_detect("顺") ~ "Caesarean section",
+        delivery %>% str_detect("剖") ~ "Vaginal delivery",
+        TRUE ~ NA
+    )
+    )
+    
+```
+
+Continuous data can be directly used with Wilcoxon
+
+```{r}
+list.continuous <- c("age", "GAdelivery", "OGTTweek", "GLU0", "GLU1", "Glu2", "OGTT-AUC")
+
+df.samples_cli.continuous <- data.frame()
+for (cli in list.continuous) {
+    df_tmp <- df.samples_cli %>% select(Family, all_of(cli)) %>%
+        setNames(c("Family", "cli_item"))
+    
+    x.passqc <- df_tmp %>% filter(Family %in% list.familyid.passqc) %>% na.omit() %>% pull("cli_item")
+    x.gdm <- df_tmp %>% filter(Family %in% list.familyid.GDM_only) %>% na.omit() %>% pull("cli_item")
+    x.ctrl <- df_tmp %>% filter(Family %in% list.familyid.ctrl) %>% na.omit() %>% pull("cli_item")
+    
+    df.samples_cli.continuous <- df.samples_cli.continuous %>% rbind(
+        data.frame(
+            cli_trait = cli,
+            n_passqc = x.passqc %>% length(),
+            mean_passqc = x.passqc %>% mean(),
+            sd_passqc = x.passqc %>% sd(),
+            n_gdm = x.gdm %>% length(),
+            mean_gdm = x.gdm %>% mean(),
+            sd_gdm = x.gdm %>% sd(),
+            n_ctrl = x.ctrl %>% length(),
+            mean_ctrl = x.ctrl %>% mean(),
+            sd_ctrl = x.ctrl %>% sd(),
+            p_wilcox = wilcox.test(x.gdm, x.ctrl)$p.value
+        )
+    )
+    
+}
+
+df.samples_cli.continuous <- df.samples_cli.continuous %>% mutate(sign_wilcox = sign_symbol(p_wilcox))
+
+write.csv(df.samples_cli.continuous, "df.samples_cli.continuous.csv")
+```
+
+Categorical variables use chi-square or exact tests
+
+```{r}
+list.class <- c("nulliparous", "gender", "delivery")
+
+df.samples_cli.class <- data.frame()
+for (cli in list.class) {
+    df_tmp <- df.samples_cli %>% select(Family, all_of(cli)) %>%
+        setNames(c("Family", "cli_item"))
+    
+    x.passqc <- df_tmp %>% filter(Family %in% list.familyid.passqc) %>% na.omit() %>% pull("cli_item")
+    x.gdm <- df_tmp %>% filter(Family %in% list.familyid.GDM_only) %>% na.omit() %>% pull("cli_item")
+    x.ctrl <- df_tmp %>% filter(Family %in% list.familyid.ctrl) %>% na.omit() %>% pull("cli_item")
+    n.passqc <- x.passqc %>% length()
+    n.gdm <- x.gdm %>% length()
+    n.ctrl <- x.ctrl %>% length()
+    n <- df_tmp %>% nrow()
+    class1 <- unique(x.passqc)[1]
+    class2 <- unique(x.passqc)[2]
+    
+    table_tmp <- table(c(x.gdm, x.ctrl), c(rep("GDM", n.gdm), rep("CTRL", n.ctrl)))
+    
+    chi_test <- chisq.test(table_tmp)
+    expected_freq <- chi_test$expected
+    method <- "chisq"
+    
+    if (any(expected_freq < 5)) {
+        fisher_result <- fisher.test(table_tmp)
+        method <- "fisher"
+    }
+    
+    df.samples_cli.class <- df.samples_cli.class %>% rbind(
+        data.frame(
+            cli_trait = cli,
+            class1 = class1,
+            class2 = class2,
+            n_class1_passqc = sum(x.passqc == class1),
+            perc_class1_passqc = sum(x.passqc == class1) / n,
+            n_class2_passqc = sum(x.passqc == class2),
+            perc_class2_passqc = sum(x.passqc == class2) / n,
+            n_class1_gdm = sum(x.gdm == class1),
+            perc_class1_gdm = sum(x.gdm == class1) / n,
+            n_class2_gdm = sum(x.gdm == class2),
+            perc_class2_gdm = sum(x.gdm == class2) / n,
+            n_class1_ctrl = sum(x.ctrl == class1),
+            perc_class1_ctrl = sum(x.ctrl == class1) / n,
+            n_class2_ctrl = sum(x.ctrl == class2),
+            perc_class2_ctrl = sum(x.ctrl == class2) / n,
+            test_method = method,
+            p_value = ifelse(method == "chisq", chi_test$p.value, fisher_result$p.value)
+        )
+    )
+
+}
+
+df.samples_cli.class <- df.samples_cli.class %>% mutate(sign_test = sign_symbol(p_value))
+
+write.csv(df.samples_cli.class, "df.samples_cli.class.csv")
+```
+
+## PE Dataset Overview
+
+We similarly analyze the PE dataset (`model1/pe_ctl_tpm_1226.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv`), focusing on early-onset and late-onset PE subgroups.
+
+Cell fraction tables are imported and grouped accordingly.
+
+```{r}
+#| eval: false
+#| include: false
+df.pe <- read_delim("model1/pe_ctl_tpm_1226.txt.deconformer_TSP_preg_train_save_files_0302_230208.epoch9.tsv", 
+    delim = "\t", escape_double = FALSE, 
+    trim_ws = TRUE) 
+colnames(df.pe)[1] <- "Sample"
+
+df.pe <- df.pe %>% select(Sample, everything())
+cell_types.W <- df.pe %>% select(-Sample) %>% colnames()
+
+df.pe %>% dim()
+df.pe %>% head()
+```
+
+extract information from sample IDs
+
+```{r}
+df.pe <- df.pe %>% 
+    mutate(Group = ifelse(Sample %>% startsWith("PE"), "PE", "CTRL"))
+df.pe$Pregnancy <- strsplit(df.pe$Sample, "-") %>% 
+    lapply(function(x) x[2]) %>% unlist() %>% 
+    startsWith("Early") %>% ifelse("Early", "Late")
+df.pe <- df.pe %>% mutate(Meta = paste(Group, Pregnancy, sep = "-")) %>%
+    select(Sample, Meta, Group, Pregnancy, everything())
+
+df.pe
+df.pe %>% group_by(Group, Pregnancy) %>% summarise(count = n())
+```
+
+## The full spectrum of PE's data
+
+Take the mean of each group
+
+```{r}
+df.pie <- df.pe %>% 
+    select(Meta, cell_types.W) %>%
+    gather(key = "Cell_type", value = "Proportion", -Meta) %>%
+    group_by(Meta, Cell_type) %>%
+    summarise(Proportion = mean(Proportion)) %>%
+    ungroup()
+
+groups <- df.pie$Meta %>% unique()
+
+df.pie.list <- list()
+for (group in groups) {
+    df.pie.list[[group]] <- df.pie %>% filter(Meta == group) %>%
+        arrange(desc(Proportion)) %>% 
+        left_join(df.cell_type, by = "Cell_type") %>%
+        mutate(Cell_type = if_else(Simplified_cell_types %>% is.na(), 
+                                    Cell_type, Simplified_cell_types) ) %>%
+        mutate(Rank = row_number()) %>% 
+        mutate(Cell_type = ifelse(Rank > 11, "Others", Cell_type)) %>% 
+        group_by(Cell_type) %>% 
+        summarise(Proportion = sum(Proportion)) %>%  
+        ungroup() %>%
+        arrange(Cell_type == "Others", desc(Proportion))
+}
+
+head(df.pie.list[1])
+```
+
+draw
+
+```{r}
+plot.pie.list <- list()
+for (group in groups) {
+    plot.pie.list[[group]] <- df.pie.list[[group]] %>%
+        draw_pie()
+    plot.pie.list[[group]]
+    ggsave(filename = paste0("plot/PE.", group, ".pdf"),
+           height = 4, width = 6, units = "in")
+}
+plot.pie.list
+```
+
+bar
+
+```{r}
+tmp_df <- rbind(
+    df.pie.list[["CTRL-Early"]] %>% mutate(Group = "CTRL-Early"),
+    df.pie.list[["CTRL-Late"]] %>% mutate(Group = "CTRL-Late"),
+    df.pie.list[["PE-Early"]] %>% mutate(Group = "PE-Early"),
+    df.pie.list[["PE-Late"]] %>% mutate(Group = "PE-Late")
+) %>%
+    mutate(Proportion_percent = scales::percent(Proportion, accuracy = 0.01))
+factor_level <- df.pie.list[["PE-Early"]]$Cell_type %>%
+    union(df.pie.list[["CTRL-Early"]]$Cell_type) %>%
+    union(df.pie.list[["PE-Late"]]$Cell_type) %>%
+    union(df.pie.list[["CTRL-Late"]]$Cell_type)
+
+# df.pie.list[["CTRL-Early"]]$Cell_type %>%
+#     intersect(df.pie.list[["CTRL-Late"]]$Cell_type) %>%
+#     intersect(df.pie.list[["PE-Early"]]$Cell_type) %>%
+#     intersect(df.pie.list[["PE-Late"]]$Cell_type)
+
+tmp_df$Cell_type <- factor(tmp_df$Cell_type, factor_level)
+tmp_df <- tmp_df %>% mutate(Group = factor(case_when(
+    Group == "PE-Early" ~ "Early-onset\nPE",
+    Group == "PE-Late" ~ "Late-onset\nPE",
+    Group == "CTRL-Early" ~ "Early-onset\nCTRL",
+    Group == "CTRL-Late" ~ "Late-onset\nCTRL",
+), c("Early-onset\nCTRL", "Early-onset\nPE", 
+     "Late-onset\nCTRL", "Late-onset\nPE")))
+    
+# tmp_df$Group <- factor(tmp_df$Group,
+#                        c("PE-Early", "CTRL-Early", "PE-Late", "CTRL-Late"))
+colors <- brewer.pal(length(factor_level), "Paired")
+    
+plot.4bar <-
+    ggplot(tmp_df, aes(x = Group, y = Proportion, fill = Cell_type)) +
+    geom_bar(stat = "identity",
+             width = 1,
+             color = "white") +
+    # geom_stratum(width = 0.7, color='white', size=0.6) +
+    geom_text(aes(label = Proportion_percent),
+              position = position_stack(vjust = 0.5),
+              size = 2) +
+    # coord_polar("y", start = -2.3, direction = -1) +
+    theme_bw() +
+    scale_fill_manual(values = setNames(colors, factor_level)) +
+    guides(fill = guide_legend(title = "Cell types")) +
+    labs(x = "")
+    # scale_y_continuous(expand = expansion(add = c(0.1, 0.1)))
+plot.4bar
+ggsave(filename = "plot/PE.4bar.pdf",
+           height = 4, width = 6, units = "in")
+```
+
+### Clustering and Differential Analysis
+
+We perform unsupervised clustering of PE samples and conduct differential testing to identify cell types significantly associated with PE status.
+
+Heatmaps are used for visualization.
+
+### Additional Statistical Analyses
+
+-   Continuous clinical variables were compared using Wilcoxon tests.
+-   Categorical variables were compared using Chi-square or Fisher's exact test where appropriate.
+
+All comparisons were adjusted for multiple testing using Benjamini–Hochberg correction.
+
+```{r}
+pregnancy <- c("Early", "Late")
+
+df.pe.test <- data.frame()
+for (preg in pregnancy) {
+    for (ty in cell_types.W) {
+        x <- df.pe %>% filter(Pregnancy == preg, Group == "PE") %>% pull(ty)
+        y <- df.pe %>% filter(Pregnancy == preg, Group == "CTRL") %>% pull(ty)
+        
+        test_res <- wilcox.test(x, y)
+        df.pe.test <- df.pe.test %>% rbind(
+            data.frame(
+                Pregnancy = preg,
+                Cell_type = ty,
+                Group1 = "PE",
+                Mean_group1 = mean(x),
+                Median_group1 = median(x),
+                Group2 = "CTRL",
+                Mean_group2 = mean(y),
+                Median_group2 = median(y),
+                P_wilcox = test_res$p.value
+            )
+        )
+        
+    }
+}
+
+df.pe.test$Padj_BH <- df.pe.test$P_wilcox %>% p.adjust(method = "BH")
+
+get_sign <- function(p) {
+  ifelse(p < 0.001, "***",
+         ifelse(p < 0.01, "**",
+                ifelse(p < 0.05, "*", NA)))
+}
+
+df.pe.test <- df.pe.test %>% mutate(
+    sign_P = get_sign(P_wilcox),
+    sign_Padj = get_sign(Padj_BH)
+)
+
+df.pe.test.sign <- df.pe.test %>%
+    filter(!is.na(sign_P) | !is.na(sign_Padj))
+
+df.pe.test %>% nrow()
+df.pe.test.sign %>% nrow()
+df.pe.test.sign
+```
+
+save
+
+```{r}
+write.csv(df.pe.test.sign, file = "df.PE.test.sign.csv", row.names = FALSE)
+write.csv(df.pe.test, file = "df.PE.test.csv", row.names = FALSE)
+```
+
+### PE differential cell box plot (showing all significantly different results)
+
+```{r}
+# list.pe.show <- c("platelet", "kidney_epithelial_cell",
+#                   "early_SCT", "early_VCT", "early_EVT",
+#                   "late_SCT", "late_VCT", "late_EVT",
+#                   "endothelial_cell", "hepatocyte",
+#                   "smooth_muscle_cell", "monocyte",
+#                   "b_cell", "t_cell", "nk_cell")
+list.sign <- paste0(df.pe.test.sign$Pregnancy, df.pe.test.sign$Cell_type)
+
+df.pe %>% 
+    gather(key = "Cell_type", value = "Fraction", -(1: 4)) %>%
+    # filter(Cell_type %in% list.pe.show) %>%
+    filter(paste0(Pregnancy, Cell_type) %in% list.sign) %>%
+    # mutate(Cell_type = Cell_type %>% str_replace_all("__", "\n& ")) %>%
+    # mutate(Cell_type = Cell_type %>% str_replace_all("_", " ")) %>%
+    left_join(df.cell_type, by = "Cell_type") %>%
+    mutate(Simplified_cell_types = case_when(
+        Simplified_cell_types == "intrahepatic cholangiocyte" ~ "intrahepatic\ncholangiocyte",
+        Simplified_cell_types == "intestinal epithelial progenitor cells" ~ "intestinal epithelial\nprogenitor cells",
+        Simplified_cell_types == "intestinal enterocyte" ~ "intestinal\nenterocyte", 
+        Simplified_cell_types == "salivary gland cell" ~ "salivary gland cell", 
+        Simplified_cell_types == "smooth muscle cell" ~ "smooth\nmuscle cell",
+        TRUE ~ Simplified_cell_types
+    )) %>%
+    ggplot(aes(x = Simplified_cell_types, y = Fraction, fill = Group)) +
+    geom_boxplot(outliers = FALSE) +
+    facet_wrap(. ~ Pregnancy + Simplified_cell_types, 
+               scales = "free", nrow = 3) +
+    # facet_wrap(~ Pregnancy, scales = "free", space = "free_x") +
+    labs(y = "Fraction", x = "Cell type") +
+    theme_bw() +
+    # scale_fill_manual(values = c("GDM" = "red", "CTRL" = "blue")) + 
+    scale_fill_brewer(palette = "Paired") +
+    theme(
+        axis.title.x = element_blank(),    # 隐藏 X 轴标签
+        axis.text.x = element_blank(),     # 隐藏 X 轴刻度文字
+        axis.ticks.x = element_blank(),    # 隐藏 X 轴刻度线
+        axis.line.x = element_blank(),      # 隐藏 X 轴轴线
+        axis.text.y = element_text(angle = 40, hjust = 1),  # 向下倾斜 y 轴标签
+        panel.spacing.x = unit(0, "in")
+    ) -> plot
+
+plot
+ggsave(filename = "plot/plot_box_PE_diff_frac.pdf",
+       width = 7.5, height = 5.5)
+```
+
+### Unsupervised Clustering of PE Samples
+
+Unsupervised clustering was conducted using attention-based features.
+
+Pheatmap plots show hierarchical clustering with color-coded clinical annotations.
+
+```{r}
+import_mat <- function(path) {
+    df <- read_delim(
+        path,
+        delim = "\t",
+        escape_double = FALSE,
+        trim_ws = TRUE
+    )
+    colnames(df)[1] <- "Sample"
+    df %>% 
+    mutate(Group = case_when(
+        Sample %>% startsWith("PE") ~ "PE",
+        Sample %>% startsWith("CTRL") ~ "CTRL",
+        TRUE ~ "Other"
+    )) %>% 
+    filter(Group != "Other") %>%
+    mutate(Pregnancy = case_when(
+        grepl("Late", Sample) ~ "Late",
+        grepl("Early", Sample) ~ "Early",
+        TRUE ~ "Other"
+    )) %>%
+    select(Sample, Pregnancy, Group, everything())
+}
+
+df.cls.pe <- import_mat("PE_cls.tsv")
+df.cls.pe
+```
+
+Hypothesis testing for the proportions of cells in different groups
+
+```{r}
+get_diff_df <- function(df, df_name) {
+    cols <- df %>% select(-Sample, -Group) %>% colnames()
+    group <- df %>% pull("Group") %>% unique()
+    df.diff <- data.frame()
+    
+    for (col in cols) {
+        x <- df %>% filter(Group == group[1]) %>% pull(col)
+        y <- df %>% filter(Group == group[2]) %>% pull(col)
+        res <- wilcox.test(x, y)
+        
+        df.diff <- df.diff %>% rbind(
+            data.frame(
+                Key = col,
+                Group1 = group[1],
+                Group1_mean = x %>% mean(),
+                Group1_median = x %>% median(),
+                Group2 = group[2],
+                Group2_mean = y %>% mean(),
+                Group2_median = y %>% median(),
+                p_wilcox = res$p.value
+            )
+        )
+    }
+    
+    df.diff$padj_BH <- df.diff$p_wilcox %>% p.adjust(method = "BH")
+    df.diff <- df.diff %>% filter(padj_BH < 0.05 | p_wilcox < 0.05)
+    
+    df.diff %>% write.csv(paste0(df_name, ".diff.csv"), row.names = FALSE)
+    df %>% select(c("Sample", "Group", 
+                    df.diff %>% filter(p_wilcox < 0.05) %>% pull("Key")))
+}
+
+
+for (preg in c("Early", "Late")) {
+    tmp_df <- df.cls.pe %>% filter(Pregnancy == preg) %>% select(-Pregnancy)
+    if (preg == "Early") {
+        df.cls.pe.early <- tmp_df
+        df.cls.pe.early.diff <- tmp_df %>% get_diff_df("df.cls.pe.early")
+    } else {
+        df.cls.pe.late <- tmp_df
+        df.cls.pe.late.diff <- tmp_df %>% get_diff_df("df.cls.pe.late")
+    }
+}
+
+save(df.cls.pe.early, df.cls.pe.early.diff, 
+     df.cls.pe.late, df.cls.pe.late.diff, file = "df.cls.pe.Rdata")
+```
+
+draw
+
+```{r}
+load("df.cls.pe.Rdata")
+plot_heatmap <- function(df, plot_name) {
+    mat <- df %>%
+        select(-Group) %>% column_to_rownames("Sample") %>% as.matrix()
+    groups <- df %>% pull("Group")
+    
+    annotation_df <- data.frame(Group = df %>% pull("Group"))
+    rownames(annotation_df) <- rownames(mat)
+    
+    my_color <- colorRampPalette(rev(brewer.pal(n = 9, name ="PuOr")))(100)
+    
+    pheatmap(
+        mat %>% t(),
+        scale = "row",
+        clustering_distance_cols = "correlation",
+        clustering_distance_rows = "euclidean",
+        annotation_col = annotation_df,
+        annotation_names_col = FALSE,
+        # annotation_col = annotation_col_df,  # 添加列注释
+        show_rownames = FALSE,
+        show_colnames = FALSE,
+        main = plot_name,
+        # cluster_cols = FALSE,
+        treeheight_row = FALSE,
+        color = my_color
+    )
+}
+
+pdf("plot/PE_Cluster.pdf", onefile = TRUE, width = 7, height = 7)
+plot_heatmap(df.cls.pe.early, "Early-Onset PE Standardized [CLS] Attention Scores")
+plot_heatmap(df.cls.pe.early.diff, "Early-Onset PE Standardized Differential [CLS] Attention Scores")
+plot_heatmap(df.cls.pe.late, "Late-Onset PE Standardized [CLS] Attention Scores")
+plot_heatmap(df.cls.pe.late.diff, "Late-Onset PE Standardized Differential [CLS] Attention Scores")
+dev.off()
+```
+
+### Classification Performance for PE
+
+Similar ML pipelines are applied to classify PE vs control samples.
+
+Classification accuracy is assessed using ROC-AUC and PR-AUC metrics.
+
+Results are compared between early-onset and late-onset PE models.
+
+```{r}
+lgbm <- list(type = "Classification",
+             library = c("lightgbm", "dplyr"),
+             loop = NULL)
+# 定义参数
+params.mat <- matrix(
+    c("objective", "character",
+      "metric", "character",
+      "num_leaves", "numeric",
+      "max_depth", "numeric",
+      "min_data_in_leaf", "numeric",
+      "min_sum_hessian_in_leaf", "numeric",
+      "learning_rate", "numeric",
+      "reg_alpha", "numeric",
+      "reg_lambda", "numeric",
+      "bagging_fraction", "numeric",
+      "bagging_freq", "numeric",
+      "feature_fraction", "numeric",
+      "num_iterations", "numeric"
+      ), 
+    byrow = TRUE, ncol = 2)
+lgbm$parameters <- params.mat %>% data.frame() %>% 
+    setNames(c("parameter", "class")) %>%
+    mutate(label = parameter)
+# 参数的grid
+lgbm$param_grid <- list(
+    objective = "binary",
+    # 目标函数
+    metric = "binary_logloss",
+    # 二分类问题的评估指标
+    num_leaves = c(3, 7),
+    # 叶子节点数
+    max_depth = c(5, 10),
+    # 最大深度
+    min_data_in_leaf = 20,
+    # 每个叶子节点的最小样本数
+    min_sum_hessian_in_leaf = 0.001,
+    # 每个叶子节点的最小Hessian和
+    learning_rate = c(0.05, 0.1),
+    # 学习率
+    reg_alpha = c(0.1, 0.5),
+    # L1正则化系数
+    reg_lambda = 0,
+    # L2正则化系数
+    bagging_fraction = 1,
+    # 行采样比例
+    bagging_freq = 0,
+    # 行采样的频率
+    feature_fraction = 1,
+    # 列采样比例
+    num_iterations = 100
+    # 迭代次数
+) %>% expand.grid()
+
+# grid函数仅作占位符
+lgbm$grid <- function(x, y, len = NULL, search = "grid") {
+    lgbm$param_grid
+}
+
+# 定义训练方法
+lgbm.fit <- function(x, y, wts, param, lev, last, weights, classProbs) { 
+    # n_posi <- sum(y == lev[2])
+    params <- list(
+        verbose = -1,
+        # nthread = detectCores() - 1,
+        nthread = 1,
+        seed = 2025,
+        # scale_pos_weight = (length(y) - n_posi) / n_posi
+        scale_pos_weight = 1
+    )
+    for (i in 1: ncol(param)) {
+        param_name <- colnames(param)[i]
+        params[[param_name]] <- param[1, i]
+    }
+    
+    y <- factor(y, lev)
+    data_lgb <- lgb.Dataset(data = x %>% as.matrix(), label = as.integer(y) - 1)
+    
+    model.list <- list(model = lgb.train(params, data_lgb),
+                       factor_levels = lev)
+    # 将因子顺序保存在模型对象中
+    # model$factor_levels <- lev
+    # model
+}
+# 定义预测方法
+lgbm.pred <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    probs <- predict(modelFit$model, newdata %>% as.matrix())
+    factor(ifelse(probs >= 0.5, 2, 1),
+           labels = modelFit$factor_levels, levels = c(1, 2))
+    # ifelse(probs >= 0.5, modelFit$factor_levels[2], modelFit$factor_levels[1])
+    # ifelse(probs >= 0.5, 2, 1)
+}
+# 定义预测概率方法
+lgbm.prob <- function(modelFit, newdata, preProc = NULL, submodels = NULL) {
+    prob <- predict(modelFit$model, newdata %>% as.matrix())
+    data.frame(1 - prob, prob) %>% setNames(modelFit$factor_levels)
+        
+}
+# 模型从简单到复杂的参数排序
+lgbm.sort <- function(x) x[order(x$max_depth, x$num_leaves, x$num_iterations),]
+lgbm.levels <- function(x) x$factor_levels
+
+lgbm$fit <- lgbm.fit
+lgbm$predict <- lgbm.pred
+lgbm$prob <- lgbm.prob
+lgbm$sort <- lgbm.sort
+lgbm$levels <- lgbm.levels
+```
+
+```{r}
+z_score_standardize <- function(x) {
+  (x - mean(x, na.rm = TRUE)) / sd(x, na.rm = TRUE)
+}
+# 生成AUC函数
+train_and_evaluate <- function(df, indices, method, caret_method = NULL, grid_len = 1) {
+    
+    df$Group <- factor(df$Group)
+
+    # 分层抽样划分数据集
+    train_data <- df[-indices, ]
+    test_data <- df[indices, ]
+    
+    train_features <- train_data %>% select(-Sample, -Group)
+    test_features <- test_data %>% select(-Sample, -Group)
+    
+    center <- colMeans(train_features)
+    scale <- apply(train_features, 2, sd)
+    
+    train_scaled <- as.data.frame(sweep(sweep(train_features, 2, center, "-"), 2, scale, "/"))
+    test_scaled <- as.data.frame(sweep(sweep(test_features, 2, center, "-"), 2, scale, "/"))
+    
+    set.seed(2025)
+    control <- trainControl(method = "repeatedcv", number = 5, repeats = 5,
+                            classProbs = TRUE, summaryFunction = twoClassSummary,
+                            search = "grid")
+    
+    # Method <- character()
+    param_grid <- NULL
+    if (method == "SVM") { # SVM
+        Method <- "svmRadialWeights"
+    } else if (method == "RF") { #  随机森林
+        Method <- "parRF"
+    } else if (method == "XGBoost") {
+        Method <- "xgbTree"
+        len <- grid_len
+        len <- 1
+        param_grid <- expand.grid(
+            max_depth = seq(1, len), 
+            nrounds = floor((1:len) * 50), 
+            eta = c(0.3, 0.4), 
+            gamma = 0, 
+            colsample_bytree = c(0.6, 0.8), 
+            min_child_weight = c(1), 
+            subsample = seq(0.5, 1, length = len)
+            )
+    } else if (method == "LightGBM") {
+        Method <- lgbm
+    }
+    
+    if (!is.null(caret_method)) {
+        Method <- caret_method
+    }
+    
+    model <- train(
+          x = train_scaled,
+          y = train_data$Group,
+          method = Method,
+          trControl = control,
+          tuneGrid = param_grid,
+          metric = "ROC"
+        )
+    
+    pred <- predict(model,
+                    newdata = test_scaled,
+                    type = "prob")[, 2]
+    Method <- if (Method %>% is.character()) {
+        Method
+    } else {
+        "lightgbm"
+    }
+    model$bestTune %>% 
+        mutate(predictions = pred, method = Method, preg_group = levels(df$Group)[2]) %>%
+        select(predictions, preg_group, method, everything()) %>%
+        return()
+}
+
+# 分类器模型验证全流程
+leaveone_pred <- function(df, method, caret_method = NULL, name = NULL, grid_len = 1) {
+    # df <- df.frac.covid
+    # method <- "LightGBM"
+    
+    # 对数值列z-score
+    # df.zscore <- df %>%
+    #   mutate(across(where(is.numeric), z_score_standardize))
+    df <- df
+    method <- method
+    caret_method <- caret_method
+    grid_len <- grid_len
+    
+    res.list <- list()
+    # if (method == "LightGBM") {
+    #     for (i in 1:nrow(df)) {
+    # 
+    #         res.list[i] <- train_and_evaluate(df, i, method)
+    #     }
+    # } else {
+        cl <- makeCluster(detectCores() - 1)
+        clusterEvalQ(cl, {
+            library(dplyr)
+            library(caret)
+            library(lightgbm)
+        })
+        clusterExport(cl, c("train_and_evaluate", "lgbm"))
+    
+        # 并行计算预测结果
+        res.list <- parLapply(cl, 1:nrow(df), function(i) {
+            train_and_evaluate(df, i, method, caret_method, grid_len)
+        })
+        # 停止集群
+        stopCluster(cl)
+    # }
+    
+    res.df <- do.call(rbind, res.list)
+    res.df <- res.df %>% cbind(df)
+    
+    if (!is.null(name)) {
+        res.df %>% write_tsv(paste("classification/df.model", name, method, "tsv", sep = "."))
+    }
+    res.df
+}
+
+leaveone_auc <- function(df, method) {
+    res.df <- leaveone_pred(df, method)
+    
+    roc_obj <- pROC::roc(df$Group, res.df$predictions)
+    auc(roc_obj)
+}
+
+# df.pe %>% filter(Pregnancy == "Early") %>% select(-Meta, -Pregnancy) %>%
+#     leaveone_pred("SVM")
+```
+
+```{r}
+# methods <- c("SVM")
+methods <- c("SVM", "RF")
+df.pe.auc <- data.frame()
+for (method in methods) {
+    tmp_df <- rbind(
+        data.frame(
+            Method = method,
+            Dataset = "Early-onset PE", 
+            AUC = df.pe %>% filter(Pregnancy == "Early") %>%
+                select(-Meta, -Pregnancy) %>% leaveone_auc(method)
+        ),
+        data.frame(
+            Method = method,
+            Dataset = "Late-onset PE", 
+            AUC = df.pe %>% filter(Pregnancy == "Late") %>%
+                select(-Meta, -Pregnancy) %>% leaveone_auc(method)
+        )
+    )
+    
+    df.pe.auc <- df.pe.auc %>% rbind(tmp_df)
+}
+
+df.pe.auc %>% head()
+```
+
+draw
+
+```{r}
+tmp_df <- df.pe.auc
+tmp_df$AUC_label <- label_number(accuracy = 0.0001)(tmp_df$AUC)
+
+plot_pe_auc <- ggplot(tmp_df, aes(x = Method, y = AUC, fill = Dataset)) +
+    geom_col(position = position_dodge2(), width = 0.8) +
+    theme_bw() +
+    theme(legend.position = "top") +
+    geom_text(
+        aes(label = AUC_label),
+        position = position_dodge2(width = 0.8),
+        vjust = -0.5,
+        # 调整标签位置
+        size = 3
+    ) +
+    ylim(0 , 1)
+
+
+print(plot_pe_auc)
+ggsave("plot/plot_auc_pe.pdf", width = 5, height = 3)
+```
+
+Calculate and save the modeling results
+
+```{r}
+df.model.list <- list()
+
+df.eope <- df.pe %>% filter(Pregnancy == "Early") %>%
+                select(-Meta, -Pregnancy)
+df.lope <- df.pe %>% filter(Pregnancy == "Late") %>%
+                select(-Meta, -Pregnancy)
+
+df.model.list[["EOPE"]][["SVM"]] <- 
+    leaveone_pred(df.eope, "SVM", "svmLinearWeights", "EOPE")
+df.model.list[["LOPE"]][["SVM"]] <- 
+    leaveone_pred(df.lope, "SVM", "svmLinearWeights", "LOPE")
+df.model.list[["EOPE"]][["RF"]] <- 
+    leaveone_pred(df.eope, "RF", "parRF", "EOPE")
+df.model.list[["LOPE"]][["RF"]] <- 
+    leaveone_pred(df.lope, "RF", "cforest", "LOPE")
+df.model.list[["EOPE"]][["XGBoost"]] <- 
+    leaveone_pred(df.eope, "XGBoost", "xgbTree", "EOPE", 2)
+df.model.list[["LOPE"]][["XGBoost"]] <- 
+    leaveone_pred(df.lope, "XGBoost", "xgbTree", "LOPE", 3)
+df.model.list[["EOPE"]][["LightGBM"]] <- 
+    leaveone_pred(df.eope, "LightGBM", NULL, "EOPE")
+df.model.list[["LOPE"]][["LightGBM"]] <- 
+    leaveone_pred(df.lope, "LightGBM", NULL, "LOPE")
+
+saveRDS(df.model.list, file = "classification/df.model.list.RDS")
+```
+
+draw ROC
+
+```{r}
+df.model.list <- readRDS("classification/df.model.list.RDS")
+
+draw_ggroc <- function(roc.list, feature, position) {
+    ci.auc.eope <- roc.list$EOPE %>% ci.auc()
+    ci.auc.lope <- roc.list$LOPE %>% ci.auc()
+    
+    ggroc(roc.list,
+      legacy.axes = TRUE, size = 1, alpha = 0.9) +
+        geom_segment(aes(x = 0, xend = 1, y = 0, yend = 1), 
+                     color="darkgrey", linetype="dashed") +
+        theme_bw() + 
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                EOPE = "#A6CEE3",
+                LOPE = "#1F78B4"
+                # RF = "#1F78B4",
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                EOPE = paste0(
+                    "EOPE AUC: ", round(ci.auc.eope[2], 4), "\n(95% CI:", 
+                    round(ci.auc.eope[1], 4), "-", round(ci.auc.eope[3], 4), ")"),
+                LOPE = paste0(
+                    "LOPE AUC: ", round(ci.auc.lope[2], 4), "\n(95% CI:", 
+                    round(ci.auc.lope[1], 4), "-", round(ci.auc.lope[3], 4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", roc.list$RF %>% auc() %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", roc.list$XGBoost %>% auc() %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", roc.list$LightGBM %>% auc() %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        labs(color = feature)
+}
+
+df_tmp.model.list <- list(
+    EOPE = df.model.list[["EOPE"]][["SVM"]],
+    LOPE = df.model.list[["LOPE"]][["SVM"]]
+)
+lapply(df_tmp.model.list, function(df) pROC::roc(df$Group, df$predictions)) %>%
+    draw_ggroc("Cell fractions (SVM)", c(0.6, 0.15)) -> p1
+p1
+
+# lapply(df.model.list[["EOPE"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Early-onset PE", c(0.7, 0.22)) -> p1 
+# lapply(df.model.list[["LOPE"]], function(df) roc(df$Group, df$predictions)) %>%
+#     draw_ggroc("Late-onset PE", c(0.7, 0.22)) -> p2
+# (p1 + p2)
+# ggsave(filename = "plot/plot_roc_PE.pdf", width = 8, height = 4)
+
+```
+
+PRROC
+
+```{r}
+df.model.list1 <- readRDS("classification/df.model.list.RDS")
+
+# df_list <- df.model.list1[["EOPE"]]
+# class1 <- "PE"
+# class0 <- "CTRL"
+draw_prroc <- function(df_list, class1, class0, feature, position) {
+    auc_list <- list()
+    ci_list <- list()
+    df_curve <- data.frame()
+    
+    
+    # methods <- c("SVM", "RF", "XGBoost", "LightGBM")
+    methods <- c("EOPE", "LOPE")
+    # me <- "SVM"
+    for (me in methods) {
+        df_tmp <- df_list[[me]]
+        
+        if (df_tmp[df_tmp$Group == class0, "predictions"] %>% mean() < 
+            df_tmp[df_tmp$Group == class1, "predictions"] %>% mean())
+            df_tmp$predictions <- 1 - df_tmp$predictions
+        
+        pr_curve1 <- pr.curve(scores.class0 = df_tmp$predictions[df_tmp$Group == class0],
+                     scores.class1 = df_tmp$predictions[df_tmp$Group == class1], 
+                     curve = TRUE)
+        # pr_curve2 <- pr.curve(scores.class0 = 1 - df_tmp$predictions[df_tmp$Group == class0],
+        #              scores.class1 = 1 - df_tmp$predictions[df_tmp$Group == class1], 
+        #              curve = TRUE)
+        # if (pr_curve2$auc.integral > pr_curve1$auc.integral)
+        #     pr_curve1 <- pr_curve2
+        
+        auc_list[[me]] <- pr_curve1$auc.integral
+        
+        df_curve <- pr_curve1$curve %>% as.data.frame() %>% 
+            setNames(c("recall", "precision", "cutoff")) %>%
+            mutate(cutoff = NULL, "method" = factor(me, methods)) %>%
+            rbind(df_curve)
+        
+        # 95% CI
+        B <- 2000
+        list.auprc <- numeric(B)
+        for (b in 1: B) {
+            df.sub <- df_tmp %>% group_by("Group") %>% 
+                sample_n(size = n(), replace = TRUE)
+            
+            res <- pr.curve(scores.class0 = df.sub$predictions[df.sub$Group == class0],
+                     scores.class1 = df.sub$predictions[df.sub$Group == class1], 
+                     curve = FALSE)
+            
+            list.auprc[b] <- res$auc.integral
+        }
+        
+        ci <- quantile(list.auprc, probs = c(0.025, 0.975), na.rm = TRUE)
+        ci_list[[me]] <- ci
+    }
+    
+    yintercept = sum(df_tmp$Group == class0) / nrow(df_tmp)
+       
+    df_curve %>% arrange(desc(row_number())) %>%
+        ggplot(aes(x = recall, y = precision, color = method)) +
+        geom_line(size = 1, alpha = 0.9) +
+        theme_bw() +
+        # scale_colour_brewer(palette="RdGy") +
+        scale_color_manual(
+            values = c(
+                EOPE = "#A6CEE3",
+                LOPE = "#1F78B4"
+                # XGBoost = "#B2DF8A",
+                # LightGBM = "#33A02C"
+            ),
+            labels = c(
+                EOPE = paste0(
+                    "EOPE AUC: ", auc_list[["EOPE"]] %>% round(4), "\n(95% CI: ", 
+                    ci_list[["EOPE"]][1] %>% round(4), "-", 
+                    ci_list[["EOPE"]][2] %>% round(4), ")"),
+                LOPE = paste0(
+                    "LOPE AUC: ", auc_list[["LOPE"]] %>% round(4), "\n(95% CI: ", 
+                    ci_list[["LOPE"]][1] %>% round(4), "-", 
+                    ci_list[["LOPE"]][2] %>% round(4), ")")
+                # RF = paste0(
+                #     "RF (AUC: ", auc_list[["RF"]] %>% round(4), ")"),
+                # XGBoost = paste0(
+                #     "XGBoost (AUC: ", auc_list[["XGBoost"]] %>% round(4), ")"),
+                # LightGBM = paste0(
+                #     "LightGBM (AUC: ", auc_list[["LightGBM"]] %>% round(4), ")")
+            )
+        ) +
+        theme(legend.position = "inside", legend.position.inside = position) +
+        # ylim(c(0, 1)) +
+        scale_y_continuous(limits = c(0, 1)) +
+        labs(color = feature) +
+        geom_segment(aes(x = 0, xend = 1, y = yintercept, yend = yintercept), 
+                     color="darkgrey", linetype="dashed")
+}
+
+df_tmp.model.list <- list(
+    EOPE = df.model.list[["EOPE"]][["SVM"]],
+    LOPE = df.model.list[["LOPE"]][["SVM"]]
+)
+df_tmp.model.list %>%
+    draw_prroc("PE", "CTRL", "Cell fractions (SVM)", c(0.6, 0.15)) -> p2
+p1 + p2
+ggsave(filename = "plot/plot_pr+roc_PE.pdf", width = 8, height = 4)
+
+# p1 <- df.model.list1[["EOPE"]] %>% 
+#     draw_prroc("PE", "CTRL", "Early-onset PE", c(0.7, 0.22))
+# p2 <- df.model.list1[["LOPE"]] %>% 
+#     draw_prroc("PE", "CTRL", "Late-onset PE", c(0.7, 0.22))
+# p1 + p2
+# ggsave(filename = "plot/plot_prroc_PE.pdf", width = 8, height = 4)
+```
+
+## PE unsupervised clustering
+
+```{r}
+plot_heatmap <- function(df, plot_name) {
+    mat <- df %>%
+        select(-Group, -Meta, -Pregnancy) %>% column_to_rownames("Sample") %>% as.matrix()
+    groups <- df %>% pull("Group")
+    
+    annotation_df <- data.frame(Group = df %>% pull("Group"))
+    rownames(annotation_df) <- rownames(mat)
+    
+    pheatmap(
+        mat,
+        scale = "column",
+        clustering_distance_rows = "correlation",
+        clustering_distance_cols = "euclidean",
+        annotation_row = annotation_df,
+        annotation_names_row = FALSE,
+        # annotation_col = annotation_col_df,  # 添加列注释
+        show_rownames = FALSE,
+        show_colnames = FALSE,
+        main = plot_name,
+        # cluster_cols = FALSE,
+        treeheight_col = FALSE
+    )
+}
+
+pdf("plot/pe_cluster.pdf", onefile = TRUE, width = 7, height = 3)
+plot_heatmap(df.pe %>% filter(Pregnancy == "Early"), 
+             "Early-Onset PE Standardized Cell Proportion")
+plot_heatmap(df.pe %>% filter(Pregnancy == "Late"), 
+             "Late-Onset PE Standardized Cell Proportion")
+# plot_heatmap(df.frac.covid.diff, "COVID-19 Standardized Differential Cell Proportion")
+# plot_heatmap(df.cls.covid, "COVID-19 Standardized [CLS] Attention Scores")
+# plot_heatmap(df.cls.covid.diff, "COVID-19 Standardized Differential [CLS] Attention Scores")
+dev.off()
+```

@@ -1,0 +1,65 @@
+R version 4.5.0 (2025-04-11)
+Platform: aarch64-apple-darwin20
+Running under: macOS Sequoia 15.5
+
+Matrix products: default
+BLAS:   /System/Library/Frameworks/Accelerate.framework/Versions/A/Frameworks/vecLib.framework/Versions/A/libBLAS.dylib 
+LAPACK: /Library/Frameworks/R.framework/Versions/4.5-arm64/Resources/lib/libRlapack.dylib;  LAPACK version 3.12.1
+
+locale:
+[1] en_US.UTF-8/en_US.UTF-8/en_US.UTF-8/C/en_US.UTF-8/en_US.UTF-8
+
+time zone: Asia/Shanghai
+tzcode source: internal
+
+attached base packages:
+[1] parallel  stats     graphics  grDevices utils     datasets  methods   base     
+
+other attached packages:
+ [1] readxl_1.4.5       PRROC_1.4          rlang_1.1.6        patchwork_1.3.1    jsonlite_2.0.0     scales_1.4.0       lightgbm_4.6.0    
+ [8] UpSetR_1.4.0       RColorBrewer_1.1-3 doParallel_1.0.17  iterators_1.0.14   foreach_1.5.2      glmnet_4.1-9       Matrix_1.7-3      
+[15] caret_7.0-1        lattice_0.22-7     boot_1.3-31        pROC_1.18.5        pheatmap_1.0.13    lubridate_1.9.4    forcats_1.0.0     
+[22] stringr_1.5.1      dplyr_1.1.4        purrr_1.0.4        readr_2.1.5        tidyr_1.3.1        tibble_3.3.0       ggplot2_3.5.2     
+[29] tidyverse_2.0.0   
+
+loaded via a namespace (and not attached):
+ [1] tidyselect_1.2.1     timeDate_4041.110    farver_2.1.2         digest_0.6.37        rpart_4.1.24         timechange_0.3.0    
+ [7] lifecycle_1.0.4      survival_3.8-3       magrittr_2.0.3       compiler_4.5.0       tools_4.5.0          data.table_1.17.6   
+[13] knitr_1.50           bit_4.6.0            plyr_1.8.9           withr_3.0.2          nnet_7.3-20          grid_4.5.0          
+[19] stats4_4.5.0         future_1.58.0        globals_0.18.0       MASS_7.3-65          cli_3.6.5            crayon_1.5.3        
+[25] generics_0.1.4       rstudioapi_0.17.1    future.apply_1.20.0  reshape2_1.4.4       tzdb_0.5.0           splines_4.5.0       
+[31] cellranger_1.1.0     vctrs_0.6.5          hardhat_1.4.1        hms_1.1.3            bit64_4.6.0-1        listenv_0.9.1       
+[37] gower_1.0.2          recipes_1.3.1        glue_1.8.0           parallelly_1.45.0    codetools_0.2-20     stringi_1.8.7       
+[43] gtable_0.3.6         shape_1.4.6.1        pillar_1.10.2        ipred_0.9-15         lava_1.8.1           R6_2.6.1            
+[49] vroom_1.6.5          evaluate_1.0.4       class_7.3-23         Rcpp_1.0.14          gridExtra_2.3        nlme_3.1-168        
+[55] prodlim_2025.04.28   xfun_0.52            ModelMetrics_1.2.2.2 pkgconfig_2.0.3     
+function (file = NULL, append = FALSE, type = c("output", "message"), 
+    split = FALSE) 
+{
+    type <- match.arg(type)
+    if (type == "message") {
+        if (is.null(file)) 
+            file <- stderr()
+        else if (!inherits(file, "connection") || !isOpen(file)) 
+            stop("'file' must be NULL or an already open connection")
+        if (split) 
+            stop("cannot split the message connection")
+        .Internal(sink(file, FALSE, TRUE, FALSE))
+    }
+    else {
+        closeOnExit <- FALSE
+        if (is.null(file)) 
+            file <- -1L
+        else if (is.character(file)) {
+            file <- file(file, if (append) 
+                "a"
+            else "w")
+            closeOnExit <- TRUE
+        }
+        else if (!inherits(file, "connection")) 
+            stop("'file' must be NULL, a connection or a character string")
+        .Internal(sink(file, closeOnExit, FALSE, split))
+    }
+}
+<bytecode: 0x1218866b8>
+<environment: namespace:base>

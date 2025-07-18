@@ -131,7 +131,7 @@ n_samples_per_simulation = 20000  # 每个模拟生成的样本数
 
 tp = time.time()
 # 使用joblib并行执行
-Parallel(n_jobs=n_simulations)(  # n_jobs=-1 表示使用所有可用的CPU核心
+Parallel(n_jobs=n_simulations, require="sharedmem")(  # n_jobs=-1 表示使用所有可用的CPU核心
     delayed(simulate)(cell_data,cell_types_order,genes,simu_batch,n_samples_per_simulation,simulate_save_path)
     for simu_batch in range(n_simulations)
 )

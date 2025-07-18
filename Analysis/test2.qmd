@@ -1,0 +1,438 @@
+---
+title: "Test Deconformer with pathway disturbance"
+format: html
+editor: visual
+---
+
+## Initialization
+
+```{r}
+setwd("/Users/yukisetsuna/Desktop/Decon_test")
+rm(list = ls()) 
+library(tidyverse)
+
+if_dropout <- FALSE
+```
+
+
+
+```{r}
+sink("/Users/yukisetsuna/Desktop/Decon_test/benchmark/pathway_disturbance/test2.sessionInfo.txt")
+sessionInfo()
+sink()
+```
+
+## Import Cell Fractions
+
+```{r}
+#| eval: false
+#| include: false
+# 最多读取前多少个模拟样本的数据
+n_sample_max <- 1000
+```
+
+```{r}
+#| eval: false
+#| include: false
+
+simu_frac.df <- read_delim(
+    "fractions/simu.cell_fractions.tsv",
+    delim = "\t",
+    escape_double = FALSE,
+    trim_ws = TRUE,
+    show_col_types = FALSE
+) %>%
+    column_to_rownames("Sample") %>%
+    filter(row_number() <= n_sample_max)
+
+# simu_frac_smartseq2.df <- read_delim(
+#     "Fractions2/simu_smartseq2.cell_fractions.tsv",
+#     delim = "\t",
+#     escape_double = FALSE,
+#     trim_ws = TRUE,
+#     show_col_types = FALSE
+# ) %>%
+#     column_to_rownames("Sample") %>%
+#     filter(row_number() <= n_sample_max)
+
+simu_frac.df <- simu_frac.df %>% select(order(colnames(simu_frac.df)))
+# simu_frac_smartseq2.df <- simu_frac_smartseq2.df %>% 
+#     select(order(colnames(simu_frac_smartseq2.df)))
+```
+
+```{r}
+#| eval: false
+#| include: false
+epoch <- as.character(seq(5, 20, 5))
+method <- c("0.8random", "0.8pathway", "1.0pathway", "1.0pathway+0.2random",
+            "1.2random")
+```
+
+```{r}
+#| eval: false
+#| include: false
+frac.df <- list()
+
+for (me in method) {
+    frac.df[[me]] <- list()
+    for (ep in epoch) {
+        tmp <- read_delim(
+            paste0(
+                ifelse(if_dropout, "fractions/dropout0.5/", "fractions/"),
+                str_replace_all(me, fixed("."), "_"),
+                ".epoch",
+                ep,
+                ".tsv"
+            ),
+            delim = "\t",
+            escape_double = FALSE,
+            trim_ws = TRUE,
+            show_col_types = FALSE
+        )
+        colnames(tmp)[1] <- "Sample"
+        
+        tmp <- tmp %>%
+            column_to_rownames("Sample") %>%
+            filter(row_number() <= n_sample_max)
+        
+        frac.df[[me]][[ep]] <- tmp %>% select(order(colnames(tmp)))
+    }
+}
+
+names(frac.df)
+```
+
+## Calculate CCC
+
+```{r}
+# ccc.df <- data.frame(Sample, CCC, Method, Dropout)
+ccc.df <- data.frame()
+for (me in method) {
+    for (ep in epoch) {
+        for (i in 1:nrow(simu_frac.df)) {
+            
+            x <- frac.df[[me]][[ep]][i, ] %>% unlist()
+            y <- simu_frac.df[i, ] %>% unlist()
+            
+            common_types <- intersect(names(x), names(y))
+            x <- x[common_types]
+            y <- y[common_types]
+            
+            tmp <- data.frame(
+                CCC = (2 * cov(x, y)) / (var(x) + var(y) + (mean(x) - mean(y)) ^ 2),
+                RMSE = sqrt(mean((x - y) ^ 2)),
+                R_Pearson = cor(x, y),
+                Sample = rownames(simu_frac.df)[i],
+                Method = me,
+                Epoch = ep
+            )
+            
+            ccc.df <- ccc.df %>% rbind(tmp)
+        }
+
+    }
+}
+
+ccc.df
+ccc.df %>% write_csv(if_dropout %>% ifelse("dropout0.5_ccc.df.csv", "ccc.df.csv"))
+# ccc.df %>% filter(Method == "1.0pathway", Epoch == "epoch20")
+```
+
+## Plotting
+
+Check if column names are identical, print if not
+
+```{r}
+test <- frac.df[[1]][[1]] %>% colnames()
+for (me in method) {
+  for (ep in epoch) {
+    if (!identical(test, frac.df[[me]][[ep]] %>% colnames()))
+      print(paste0("Method: ", me, " Dropout: ", do))
+  }
+}
+print("Done!!!")
+```
+
+```{r}
+# me_igore <- c("Gene-Deconformer_60w", "Gene-Deconformer_60w_epoch40", 
+#               "Gene-Deconformer_4w4w_epoch40_gene2k",
+#               "Gene-Deconformer_4w4w_epoch40_gene2k5",
+#               "Gene-Deconformer_4w4w_epoch40_gene3k",
+#               "Gene-Deconformer_60w_epoch40_gene2k",
+#               "Gene-Deconformer_60w20w_epoch24_gene3k",
+#               "Gene-Deconformer_60w20w_epoch35_gene3k",
+#               "Gene-Deconformer_60w_epoch45_gene3k5")
+# # me_select <- c("Gene-Deconformer", "Deconformer", me_igore)
+# me_select <- c("Deconformer", 
+#                # "Gene-Deconformer_60w_epoch40_gene2k",
+#                # "Gene-Deconformer_60w_epoch45_gene3k5",
+#                # "Gene-Deconformer_60w20w_epoch24_gene3k",
+#                "Gene-Deconformer_60w_epoch35_gene3k",
+#                "Scaden")
+```
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = CCC, fill = Epoch)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() + 
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = RMSE, fill = Epoch)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+```{r}
+ccc.df %>%
+    # filter(!(Method %in% me_igore)) %>%
+    ggplot(aes(x = Method, y = R_Pearson, fill = Epoch)) +
+    geom_boxplot(notch = TRUE, outlier.size = 1, ) +
+    theme_bw() +
+    theme(axis.text.x = element_text(angle = 15, hjust = 1))
+```
+
+## Paper Figures
+
+Order and naming of methods
+
+```{r}
+fig_method_level <- c(
+    rd08 = "0.8 random",
+    pw08 = "0.8 pathway",
+    pw10 = "1.0 pathway",
+    pw10_rd02 = "1.0 pathway+\n0.2 random",
+    rd12 = "1.2 random"
+)
+fig_df <- ccc.df %>%
+    mutate(fig_method = case_when(
+        Method == "0.8random" ~ fig_method_level["rd08"],
+        Method == "0.8pathway" ~ fig_method_level["pw08"],
+        Method == "1.0pathway" ~ fig_method_level["pw10"],
+        Method == "1.2random" ~ fig_method_level["rd12"],
+        Method == "1.0pathway+0.2random" ~ fig_method_level["pw10_rd02"]
+    )) 
+
+
+fig_df$fig_method <- factor(fig_df$fig_method, levels = fig_method_level)
+fig_df$Epoch <- factor(fig_df$Epoch, 
+                       levels = as.character(seq(5, 20, 5)))
+fig_df
+
+
+```
+
+Colors and transparency
+
+```{r}
+# library(scales)
+# 
+# colors <- c("black",
+#             "red",
+#             "yellow",
+#             "green",
+#             "blue",
+#             "orange",
+#             "purple",
+#             "grey")
+# yulong_palette <- c(
+#     "#c5b0d5",
+#     "#ff9896",
+#     "#1f77b4",
+#     "#d62728",
+#     "#8c564b",
+#     "#e377c2",
+#     "#7f7f7f",
+#     "#bcbd22"
+# )
+# colors <- yulong_palette
+# 
+# fig_df <- fig_df %>%
+#     mutate(Color = case_when(
+#         fig_method == fig_method_level["decon"] ~ colors[1],
+#         fig_method == fig_method_level["gene"] ~ colors[2],
+#         fig_method == fig_method_level["cbx"] ~ colors[3],
+#         fig_method == fig_method_level["scd"] ~ colors[4],
+#         fig_method == fig_method_level["bayes"] ~ colors[5],
+#         fig_method == fig_method_level["ucd"] ~ colors[6],
+#         fig_method == fig_method_level["music"] ~ colors[7],
+#         # fig_method == fig_method_level["tape"] ~ colors[8],
+#     )) %>%
+#     mutate(line_color = alpha("black", 0.8)) %>%
+#     mutate(Alpha = exp(-2 * as.numeric(Dropout))) %>%
+#     mutate(Color_alpha = alpha(Color, Alpha),
+#            line_color_alpha = alpha(line_color, Alpha))
+# fig_df.smartseq2 <- fig_df.smartseq2 %>%
+#     mutate(Color = case_when(
+#         fig_method == fig_method_level["decon"] ~ colors[1],
+#         fig_method == fig_method_level["gene"] ~ colors[2],
+#         fig_method == fig_method_level["cbx"] ~ colors[3],
+#         fig_method == fig_method_level["scd"] ~ colors[4],
+#         fig_method == fig_method_level["bayes"] ~ colors[5],
+#         fig_method == fig_method_level["ucd"] ~ colors[6],
+#         fig_method == fig_method_level["music"] ~ colors[7],
+#         # fig_method == fig_method_level["tape"] ~ colors[8],
+#     )) %>%
+#     mutate(line_color = alpha("black", 0.8))
+# 
+# fig_df$Color_alpha <- sapply(fig_df$Color_alpha, function(col) {
+#   if (nchar(col) == 7) {  # 如果颜色长度为 7，表示透明度被省略
+#     paste0(col, "FF")     # 补全透明度为 FF
+#   } else {
+#     col  # 保持原样
+#   }
+# })
+# fig_df$line_color_alpha <- sapply(fig_df$line_color_alpha, function(col) {
+#   if (nchar(col) == 7) {  # 如果颜色长度为 7，表示透明度被省略
+#     paste0(col, "FF")     # 补全透明度为 FF
+#   } else {
+#     col  # 保持原样
+#   }
+# })
+# 
+# colors_alpha <- fig_df$Color_alpha %>% unique() # 按照透明度从大到小排列
+# sorted_colors_alpha <- colors_alpha[order(sapply(colors_alpha, function(col) {
+#   # 提取透明度部分（最后两位）
+#   alpha <- substr(col, 8, 9)
+#   # 将透明度从 16 进制转换为 10 进制
+#   as.numeric(as.hexmode(alpha))
+# }), decreasing = TRUE)]
+# fig_df$Color_alpha <- factor(fig_df$Color_alpha, levels = sorted_colors_alpha)
+# 
+# fig_df
+```
+
+CCC
+
+```{r}
+library(RColorBrewer)
+
+fig_ccc <- fig_df %>%
+    ggplot(aes(x = fig_method, y = CCC, 
+               fill = Epoch)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    # facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    # scale_color_identity() +
+    # scale_fill_identity() +
+    scale_fill_brewer(palette = "Paired") +  # 使用Paired调色板
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "Concordance corr. coeff.", color = NULL,
+         title = ifelse(if_dropout, "Dropout 0.5", ""))
+
+fig_ccc
+```
+
+RMSE
+
+```{r}
+fig_rmse <- fig_df %>%
+    ggplot(aes(x = fig_method, y = RMSE, 
+               fill = Epoch)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    # facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    # scale_color_identity() +
+    # scale_fill_identity() +
+    scale_fill_brewer(palette = "Paired") + 
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "RMSE", color = NULL,
+         title = ifelse(if_dropout, "Dropout 0.5", ""))
+
+fig_rmse
+```
+
+R
+
+```{r}
+fig_r <- fig_df %>%
+    ggplot(aes(x = fig_method, y = R_Pearson, 
+               fill = Epoch)) +
+    geom_boxplot(notch = FALSE, outlier.shape = 21, outlier.size = 1) +
+    # scale_alpha_continuous(c(1, 1, 1, 1, 1, 1)) +
+    # facet_wrap(~fig_method, scales = "free_x", nrow = 1) +
+    # scale_color_identity() +
+    # scale_fill_identity() +
+    scale_fill_brewer(palette = "Paired") + 
+    theme_bw() +
+    theme(
+        # axis.text.x = element_text(angle = 30, hjust = 1),
+        panel.grid = element_blank(), # 去网格线
+        panel.spacing = unit(0, "lines"), # 去掉分面之间的间距
+        strip.text = element_blank(), # 去掉分面标签
+        legend.position = "none", # 不显示图例
+        ) +  
+    labs(x = NULL, y = "Pearson corr. coeff.", color = NULL,
+         title = ifelse(if_dropout, "Dropout 0.5", ""))
+
+fig_r
+```
+
+Legend
+
+```{r}
+width <- 6
+height <- 4
+units <- "in"
+
+fig_r + theme(legend.position = "top")
+ggsave("legend_top.pdf", width = width, height = height, units = units)
+fig_r + theme(legend.position = "right")
+ggsave("legend_right.pdf", width = width, height = height, units = units)
+```
+
+Export as PDF
+
+```{r}
+width <- 6
+height <- 4
+units <- "in" # 单位（可选 "in", "cm", "mm"）
+
+ggsave(
+    filename = ifelse(if_dropout, "fig_ccc_dropout05.pdf", "fig_ccc.pdf"),
+    plot = fig_ccc,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = ifelse(if_dropout, "fig_rmse_dropout05.pdf", "fig_rmse.pdf"),
+    plot = fig_rmse,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+ggsave(
+    filename = ifelse(if_dropout, "fig_r_dropout05.pdf", "fig_r.pdf"),
+    plot = fig_r,
+    device = "pdf",
+    width = width,
+    height = height,
+    units = units
+)
+
+# 图例
+# ggsave("fig_legend.pdf", fig_guide, width = 4, height = 2, units = "in")
+```
