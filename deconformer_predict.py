@@ -1,12 +1,11 @@
 
-
+import torch
 import os
 import sys
 import re
 import time
 
 import pandas as pd
-import torch
 import anndata
 import numpy as np
 from deconformer_model import deconformer
@@ -14,7 +13,10 @@ import scanpy as sc
 
 save_file_dir = sys.argv[1]
 pred_data = sys.argv[2]
-
+load_check_point = sys.argv[3]
+out_tsv = sys.argv[4]
+csv_cell_types = sys.argv[5]
+csv_genes = sys.argv[6]
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -105,12 +107,12 @@ def get_mask_model(file_path,check_piont):
     return model_pt,maskm
 
 
-df_genes = pd.read_csv("./resource/tsp_mRNA_genes.txt",sep='\t',index_col=0)
+df_genes = pd.read_csv(csv_genes,sep='\t',index_col=0)
 print(df_genes)
 genes =df_genes.index.tolist()
 
-cell_type =  pd.read_csv("./resource/NBT_simu_cell_order_sccpm.txt",sep='\t',index_col=0).index.tolist()
-model_pt,mask = get_mask_model(save_file_dir,15)
+cell_type =  pd.read_csv(csv_cell_types,sep='\t',index_col=0).index.tolist()
+model_pt,mask = get_mask_model(save_file_dir, load_check_point)
 print(model_pt)
 print(mask)
 df_pred = pd.read_csv(pred_data,sep='\t',index_col=0)
@@ -119,7 +121,8 @@ ann_pred = norm_real_data(df_pred,genes)
 
 
 df_pre= loadmodel_pred(save_file_dir,model_pt,df_mask,ann_pred,cell_type,device)
-if "/" in pred_data:
-    df_pre.to_csv("./inference_results/"+pred_data.split("/")[-1].split(".")[0]+"_deconformer_adult_re.txt", sep='\t')
-else:
-    df_pre.to_csv("./inference_results/" + pred_data.split(".")[0] + "_deconformer_adult_re.txt",sep='\t')
+# if "/" in pred_data:
+#     df_pre.to_csv("./inference_results/"+pred_data.split("/")[-1].split(".")[0]+"_deconformer_adult_re.txt", sep='\t')
+# else:
+#     df_pre.to_csv("./inference_results/" + pred_data.split(".")[0] + "_deconformer_adult_re.txt",sep='\t')
+df_pre.to_csv(out_tsv, sep='\t')

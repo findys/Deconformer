@@ -29,7 +29,29 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 
 ## Usage
 
-### Usage 1: use pre-trained the model to inference cfRNA samples via docker image (recommend)
+### Usage 1: Using pre-trained the model to inference cfRNA samples  (recommend)
+
+Thanks to Deconformer’s compact model size, inference for approximately 100 samples can be completed within one minute using a laptop CPU, even without a GPU.
+
+#### step1: Install dependencies.
+
+```bash
+pip install torch scanpy git
+```
+
+> Note: Since the CPU’s computational speed is sufficient for Deconformer, we have installed the CPU-only version of the PyTorch library here. If you need to run Deconformer on a GPU, you can choose to install the GPU-enabled version of PyTorch instead.
+
+#### step2: Download the Deconformer script and model files from GitHub.
+
+#### Input:
+
+- `expression_profile`: An expression profile of a cfRNA sample in `CSV` format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
+- `saved_model_path`: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
+
+#### Output:
+- `prefix_deconformer_re.txt`: A `txt` named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
+
+### Usage 2: Using pre-trained the model to inference cfRNA samples via docker image
 
 To make Deconformer easier to use, we have packaged the model weights, dependencies, and inference scripts into a Docker image and published it on Docker Hub.
 
@@ -63,23 +85,6 @@ According to your actual situation, please replace the `$workdir` `$exp_tsv` `$o
   * [`preg_model`](resource/cell_types_for_preg_model.tsv) 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts.
 
 If your device supports CUDA, it uses the GPU for inference by default; otherwise, it uses the CPU for inference. Even if you use CPUs of laptop, you can infer about 200 cfRNA samples within 10 minutes.
-
-
-### Usage 2: use pre-trained the model to inference cfRNA samples from source code
-Inference of cfRNA samples using a pre-trained model does not require a GPU, and about 200 samples can be inferred in 10 minutes on a laptop without a dedicated GPU.
-
-```python
-python  deconformer_predict.py  saved_model_path  expression_profile 
-```
-
-#### Input:
-
-- `expression_profile`: An expression profile of a cfRNA sample in `CSV` format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
-- `saved_model_path`: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
-
-#### Output:
-- `prefix_deconformer_re.txt`: A `txt` named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
-
 
 
 ### Usage 3: Train a model from scratch for custom target cell types
