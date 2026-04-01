@@ -43,13 +43,29 @@ pip install torch scanpy git
 
 #### step2: Download the Deconformer script and model files from GitHub.
 
-#### Input:
+```bash
+git clone https://github.com/findys/Deconformer.git
+```
 
-- `expression_profile`: An expression profile of a cfRNA sample in `CSV` format, for which you need to infer the origin fractions, with rows as gene names and columns as sample names.
-- `saved_model_path`: A path for saving pre-trained model parameters and mask matrices (for example, the adult model:  ./model_weights/adult_model/ ).
+#### step3: Cell fraction inference from example cfRNA expression profiles using Deconformer
 
-#### Output:
-- `prefix_deconformer_re.txt`: A `txt` named with the prefix of your sample expression profile file followed by '_deconformer_re', where the rows are sample names and the columns are cell type names. It is saved by default in the ./inference_results/ directory.
+```bash
+cd Deconformer
+bash deconformer_predict.sh adult_model example_input/PE2020.TPM.txt inference_results/test_output.txt
+```
+
+The inference results will be output to `inference_results/test_output.txt`. Rows represent samples, and columns represent cell types.
+
+Alternatively, you can follow the format of `example_input/PE2020.TPM.txt` and input your cfRNA expression profile.
+
+> USAGE: bash deconformer_predict.sh $model_name $exp_tsv $out_tsv
+>   * `$exp_tsv` is the tsv file of the expression matrix.
+>   * `$out_tsv` is the tsv file of inference result.
+>   * `$model_name` is the name of the trained model. You can choose from the following three models:
+>        * [`adult_model`](resource/NBT_simu_cell_order_sccpm.txt): 60 basic cell types;
+>        * [`fetal_model`](resource/fetal_simu_cell_order_1204.txt): 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells;
+>        * [`preg_model`](resource/cell_types_for_preg_model.tsv): 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts.
+
 
 ### Usage 2: Using pre-trained the model to inference cfRNA samples via docker image
 
