@@ -33,6 +33,8 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 
 Thanks to Deconformer’s compact model size, inference for approximately 100 samples can be completed within one minute using a laptop CPU, even without a GPU.
 
+> 💡 **Windows User?** Just install WSL 2 and run the standard Linux commands, or use the docker image (Usage 2). [WSL2 user guide](windows_user_guide.md)
+
 #### step1: Install dependencies.
 
 ```bash

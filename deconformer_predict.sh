@@ -1,9 +1,11 @@
 #!/bin/bash
 
+dir=$(dirname $0)
+
 echo "
-        adult_model $PWD/model_weights/adult_model/ 15 $PWD/model_weights/adult_model/NBT_simu_cell_order_sccpm.txt $PWD/model_weights/adult_model/tsp_mRNA_genes.txt
-        fetal_model $PWD//model_weights/fetal_model/ 15 $PWD/model_weights/fetal_model/fetal_simu_cell_order_1204.txt $PWD/model_weights/fetal_model/tsp_mRNA_genes.txt
-        preg_model $PWD//model_weights/preg_model/ 9 $PWD/model_weights/preg_model/cell_types.tsv $PWD/model_weights/preg_model/mRNA_genes.tsv
+        adult_model $dir/model_weights/adult_model/ 15 $dir/model_weights/adult_model/NBT_simu_cell_order_sccpm.txt $dir/model_weights/adult_model/tsp_mRNA_genes.txt
+        fetal_model $dir/model_weights/fetal_model/ 15 $dir/model_weights/fetal_model/fetal_simu_cell_order_1204.txt $dir/model_weights/fetal_model/tsp_mRNA_genes.txt
+        preg_model $dir/model_weights/preg_model/ 9 $dir/model_weights/preg_model/cell_types.tsv $dir/model_weights/preg_model/mRNA_genes.tsv
 " > ./model_list.txt
 
 if [ $# -ne 3 ]
@@ -30,7 +32,7 @@ if [ $(grep -c ${model} ./model_list.txt) -gt 0 ]
 then
     run_info=($(grep ${model} ./model_list.txt))
     model_name=${run_info[0]}
-    script=$PWD/deconformer_predict.py
+    script=$dir/deconformer_predict.py
     model_path=${run_info[1]}
     epoch=${run_info[2]}
     cell_types=${run_info[3]}
