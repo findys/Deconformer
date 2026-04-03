@@ -39,6 +39,8 @@ Thanks to Deconformer’s compact model size, inference for approximately 100 sa
 
 ```bash
 pip install torch scanpy git
+# or use conda:
+# conda create -n Deconformer -c conda-forge -y python==3.12 git && conda activate Deconformer && pip install torch scanpy
 ```
 
 > Note: Since the CPU’s computational speed is sufficient for Deconformer, we have installed the CPU-only version of the PyTorch library here. If you need to run Deconformer on a GPU, you can choose to install the GPU-enabled version of PyTorch instead.
