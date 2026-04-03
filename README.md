@@ -21,7 +21,7 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 * The `resource` subdirectory contains reference data required by Deconformer, as well as code for generating simulated data.
 * The `model_weights` subdirectory contains pre-trained model files for Deconformer, including models for adults, fetals, and pregnancy stages.
 * The `inference_results` subdirectory is where Deconformer saves its inference results. It also includes an example of a Deconformer inference output.
-* The `example_input` subdirectory contains an example input file of a cfRNA expression matrix.
+* The `example_input` subdirectory contains a sample input file for a cfRNA expression matrix (from [DOI: 10.1126/scitranslmed.aaz013](https://www.science.org/doi/10.1126/scitranslmed.aaz0131)).
 * The `gene_model` subdirectory contains the code for Deconformer-gene. This is a variant of Deconformer in which gene embeddings are used instead of pathway embeddings.
 * The `Analysis` subdirectory contains downstream analysis and visualization code based on the inference results of Deconformer, as presented in the article.
 * The `Dockerfile` subdirectory contains the files used for building the docker image.
@@ -95,14 +95,14 @@ docker run --rm \
 ```
 According to your actual situation, please replace the `$workdir` `$exp_tsv` `$out_tsv` `$model_name` in the command with a string:
 * `$workdir` is the local synchronization working directory, and the paths for `$exp_tsv` and `$out_tsv` should be relative to this directory.
-* `$exp_tsv` is the tsv file of the expression matrix.
+* `$exp_tsv` is the tsv file of the expression matrix. You can use the [example data](example_input/PE2020.TPM.txt) provided in this repository.
 * `$out_tsv` is the tsv file of inference result.
 * `$model_name` is the name of the trained model. You can choose from the following three models:
   * [`adult_model`](resource/NBT_simu_cell_order_sccpm.txt) 60 basic cell types; 
   * [`fetal_model`](resource/fetal_simu_cell_order_1204.txt) 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells; 
   * [`preg_model`](resource/cell_types_for_preg_model.tsv) 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts.
 
-If your device supports CUDA, it uses the GPU for inference by default; otherwise, it uses the CPU for inference. Even if you use CPUs of laptop, you can infer about 200 cfRNA samples within 10 minutes.
+If your device supports CUDA, it uses the GPU for inference by default; otherwise, it uses the CPU for inference. Even if you use CPUs of laptop, you can infer about 100 cfRNA samples within 1 minutes.
 
 
 ### Usage 3: Train a model from scratch for custom target cell types
