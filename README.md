@@ -55,14 +55,14 @@ git clone https://github.com/findys/Deconformer.git
 
 ```bash
 cd Deconformer
-bash deconformer_predict.sh adult_model example_input/PE2020.TPM.txt inference_results/test_output.txt
+python deconformer_inference.py --model adult_model --input example_input/PE2020.TPM.txt --output inference_results/test_output.txt
 ```
 
 The inference results will be output to `inference_results/test_output.txt`. Rows represent samples, and columns represent cell types.
 
 Alternatively, you can follow the format of `example_input/PE2020.TPM.txt` and input your cfRNA expression profile.
 
-> USAGE: bash deconformer_predict.sh $model_name $exp_tsv $out_tsv
+> USAGE: python deconformer_inference.py --model $model_name --input $exp_tsv --output $out_tsv
 >   * `$exp_tsv` is the tsv file of the expression matrix.
 >   * `$out_tsv` is the tsv file of inference result.
 >   * `$model_name` is the name of the trained model. You can choose from the following three models:

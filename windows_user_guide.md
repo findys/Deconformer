@@ -25,5 +25,5 @@ pip3 install torch scanpy
 git clone https://github.com/findys/Deconformer.git
 cd Deconformer
 # Now you can run the original bash script directly!
-bash deconformer_predict.sh adult_model example_input/PE2020.TPM.txt output.txt
+python deconformer_inference.py --model adult_model --input example_input/PE2020.TPM.txt --output inference_results/test_output.txt
 ```
