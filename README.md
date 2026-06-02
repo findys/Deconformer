@@ -125,3 +125,7 @@ python  deconformer_train.py  ann_simulated_data  gmt_file  project_name
 - `mask_gene_n_pathway_m.txt`: A mask matrix created from the given `gmt` file, where `n` is the number of pathways and `m` is the number of genes.
 
 #### step 3: Infer cfRNA samples, usage as in usage 1.
+
+## Brief handout of ESHG2026
+
+[Deconformer_ESHG2026_eposter](https://sateriajiaying.github.io/Deconformer_ESHG2026_eposter/)
