@@ -62,13 +62,45 @@ The inference results will be output to `inference_results/test_output.txt`. Row
 
 Alternatively, you can follow the format of `example_input/PE2020.TPM.txt` and input your cfRNA expression profile.
 
-> USAGE: python deconformer_inference.py --model $model_name --input $exp_tsv --output $out_tsv
->   * `$exp_tsv` is the tsv file of the expression matrix.
->   * `$out_tsv` is the tsv file of inference result.
->   * `$model_name` is the name of the trained model. You can choose from the following three models:
->        * [`adult_model`](resource/NBT_simu_cell_order_sccpm.txt): 60 basic cell types;
->        * [`fetal_model`](resource/fetal_simu_cell_order_1204.txt): 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells;
->        * [`preg_model`](resource/cell_types_for_preg_model.tsv): 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts.
+
+```
+usage: deconformer_inference.py [-h] --model MODEL --input INPUT --output OUTPUT [--device {cpu,cuda,mps}] [--num-threads NUM_THREADS]
+                                [--batch-size BATCH_SIZE]
+
+Deconformer Prediction Tool (Optimized for CPU/GPU/MPS)
+
+options:
+  -h, --help            show this help message and exit
+  --model, -m MODEL     Name of the trained model (e.g., adult_model, fetal_model, preg_model)
+  --input, -i INPUT     Path to the input expression matrix TSV file
+  --output, -o OUTPUT   Path to save the output inference result TSV file
+  --device, -d {cpu,cuda,mps}
+                        Device to run inference on: cpu (default), cuda (NVIDIA GPU), mps (Apple Silicon)
+  --num-threads, -t NUM_THREADS
+                        Number of CPU threads to use when --device is cpu (default: 16)
+  --batch-size, -b BATCH_SIZE
+                        Batch size for inference. Larger values utilize hardware better but consume more memory (default: 64)
+
+Available models:
+  adult_model   : 60 basic cell types
+  fetal_model   : 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells
+  preg_model    : 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts
+
+Example usage:
+  # CPU (threads 32, batch size 512)
+  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device cpu --num-threads 32 --batch-size 512
+  
+  # GPU
+  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device cuda
+  
+  # macOS MPS
+  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device mps
+```
+
+> Available models:
+>   * [adult_model](resource/NBT_simu_cell_order_sccpm.txt): 60 basic cell types;
+>   * [fetal_model](resource/fetal_simu_cell_order_1204.txt): 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells;
+>   * [preg_model](resource/cell_types_for_preg_model.tsv): 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts.
 
 
 ### Usage 2: Using pre-trained the model to inference cfRNA samples via docker image
