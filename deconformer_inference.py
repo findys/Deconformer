@@ -3,6 +3,7 @@ import os
 import sys
 import time
 import argparse
+import json
 import pandas as pd
 import anndata
 import numpy as np
@@ -12,27 +13,19 @@ from tqdm import tqdm
 from deconformer_model import deconformer
 import scanpy as sc
 
-# ================= 配置区域 =================
-MODEL_CONFIGS = {
-    "adult_model": {
-        "sub_dir": "model_weights/adult_model/",
-        "epoch": "15",
-        "cell_types_file": "NBT_simu_cell_order_sccpm.txt",
-        "genes_file": "tsp_mRNA_genes.txt"
-    },
-    "fetal_model": {
-        "sub_dir": "model_weights/fetal_model/",
-        "epoch": "15",
-        "cell_types_file": "fetal_simu_cell_order_1204.txt",
-        "genes_file": "tsp_mRNA_genes.txt"
-    },
-    "preg_model": {
-        "sub_dir": "model_weights/preg_model/",
-        "epoch": "9",
-        "cell_types_file": "cell_types.tsv",
-        "genes_file": "mRNA_genes.tsv"
-    }
-}
+# ================= 默认配置文件路径 =================
+DEFAULT_CONFIG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "model_configs.json")
+
+
+def load_model_configs(config_path):
+    """从 JSON 文件加载模型配置"""
+    if not os.path.exists(config_path):
+        print(f"ERROR: Config file not found: {config_path}")
+        print("Please create a model_configs.json file or specify one with --config.")
+        sys.exit(1)
+    with open(config_path, 'r', encoding='utf-8') as f:
+        return json.load(f)
+
 
 # ================= 核心功能函数 =================
 
@@ -41,7 +34,6 @@ def read_expression_file(filepath):
     智能读取表达矩阵文件，自动判断是否为 gzip 压缩格式。
     支持 .tsv, .txt, .tsv.gz, .txt.gz 等格式。
     """
-    # 通过读取文件头 (magic number: 1f 8b) 判断是否为 gzip
     with open(filepath, 'rb') as f:
         is_gz = f.read(2) == b'\x1f\x8b'
     
@@ -49,7 +41,6 @@ def read_expression_file(filepath):
         print(f"[INFO] Detected gzip compressed file: {os.path.basename(filepath)}")
         compression = 'gzip'
     else:
-        # 如果不是 gz，让 pandas 根据后缀推断，或直接按纯文本处理
         compression = 'infer' 
         
     df = pd.read_csv(filepath, sep='\t', index_col=0, compression=compression)
@@ -59,9 +50,8 @@ def load_model(model_path, device, num_cell_types, mask_matrix):
     """加载模型并处理多GPU保存的 module. 前缀"""
     model = deconformer(num_cell_types, mask_matrix).to(device)
     
-    # 根据设备类型决定 map_location，防止在 CPU 上加载 GPU 训练的模型时报错
     map_location = device if device.type != 'cpu' else torch.device('cpu')
-    checkpoint = torch.load(model_path, map_location=map_location)
+    checkpoint = torch.load(model_path, map_location=map_location, weights_only=False)
     
     # 处理可能的 DataParallel 'module.' 前缀
     state_dict = {k.replace('module.', ''): v for k, v in checkpoint['model_state_dict'].items()}
@@ -69,6 +59,10 @@ def load_model(model_path, device, num_cell_types, mask_matrix):
     return model
 
 def predict(model, data, device, num_cell_types, batch_size=256):
+    """
+    执行批量预测。
+    新版模型 forward(x) 接收 (batch, n_genes) 的 2D 张量。
+    """
     model.eval()
     num_samples = data.X.shape[0]
     pre_frac = np.zeros((num_samples, num_cell_types))
@@ -87,14 +81,8 @@ def predict(model, data, device, num_cell_types, batch_size=256):
         for start_idx in tqdm(range(0, num_samples, batch_size), total=num_batches, desc="Inference"):
             end_idx = min(start_idx + batch_size, num_samples)
             
-            # 形状为 (current_batch_size, num_genes)
+            # 形状为 (current_batch_size, num_genes) — 2D，与模型 forward 签名一致
             batch_exp = all_expressions[start_idx:end_idx].to(device)
-            
-            # ================= 关键修复 =================
-            # 增加一个维度，使其形状变为 (batch_size, 1, num_genes)
-            # 这与训练时 DataLoader 提供的 3D 张量形状完全一致
-            batch_exp = batch_exp.unsqueeze(1) 
-            # ============================================
             
             predictions = model(batch_exp)
             pre_frac[start_idx:end_idx, :] = predictions.cpu().numpy()
@@ -119,17 +107,26 @@ def norm_real_data(df_data, gene):
     return adata
 
 def get_mask_model(file_path, check_point):
-    """查找具体的模型 checkpoint 和 mask 文件"""
+    """
+    查找具体的模型 checkpoint 和 mask 文件。
+    使用 f"epoch_{check_point}." 精确匹配，避免 epoch 2 匹配到 epoch 20。
+    """
     maskm = None
     model_pt = None
+    
+    target_pattern = f"epoch_{check_point}."
+    
     for i in os.listdir(file_path):
         if "mask" in i:
             maskm = i
-        if "checkpoint" in i and str(check_point) in i:
+        if "checkpoint" in i and target_pattern in i:
             model_pt = i
     
     if not maskm or not model_pt:
-        raise FileNotFoundError(f"Could not find mask or checkpoint file containing '{check_point}' in {file_path}")
+        raise FileNotFoundError(
+            f"Could not find mask or checkpoint file matching pattern '{target_pattern}' in {file_path}\n"
+            f"Available files: {os.listdir(file_path)}"
+        )
         
     return model_pt, maskm
 
@@ -164,19 +161,17 @@ def run_inference(model_dir, epoch_str, cell_types_file, genes_file, exp_tsv, ou
     mask_file_path = os.path.join(model_dir, mask_name)
     
     df_mask = pd.read_csv(mask_file_path, sep='\t', index_col=0)
-    # 将 mask 矩阵直接加载到目标设备上
-    mask_matrix = torch.from_numpy(df_mask.T.to_numpy()).int().to(device)
+    # mask 使用 float 类型，避免 einsum 报类型错误
+    mask_matrix = torch.from_numpy(df_mask.T.to_numpy()).float()
     
     # 4. 加载并预处理输入数据
     print(f"[INFO] Reading input file: {exp_tsv}")
-    df_pred = read_expression_file(exp_tsv)  # <--- 使用智能读取函数
+    df_pred = read_expression_file(exp_tsv)
     ann_pred = norm_real_data(df_pred, genes)
     
-    # ================= 修复 Warning =================
     # 加上 .copy() 避免在 view 上直接修改 X 触发 ImplicitModificationWarning
     ann_pred = ann_pred[:, df_mask.index.tolist()].copy()
     ann_pred.X = np.log2(ann_pred.X + 1)
-    # =================================================
     
     # ================= 5. 加载模型 =================
     print("[INFO] Loading model...")
@@ -202,36 +197,70 @@ def run_inference(model_dir, epoch_str, cell_types_file, genes_file, exp_tsv, ou
 # ================= 主入口 =================
 
 def main():
+    # 先加载配置文件（用于 help 信息和模型名称验证）
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    default_config_path = DEFAULT_CONFIG_FILE
+    
+    # 如果默认配置文件存在，加载它用于 help 信息
+    model_configs = {}
+    if os.path.exists(default_config_path):
+        model_configs = load_model_configs(default_config_path)
+    
+    # 构建可用模型列表的描述
+    available_models_desc = "Available models (from config):\n"
+    for name, cfg in model_configs.items():
+        desc = cfg.get('description', 'No description')
+        available_models_desc += f"  {name:14s}: {desc}\n"
+    
     parser = argparse.ArgumentParser(
         description="Deconformer Prediction Tool (Optimized for CPU/GPU/MPS)",
         formatter_class=argparse.RawTextHelpFormatter,
-        epilog="""
-Available models:
-  adult_model   : 60 basic cell types
-  fetal_model   : 27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells
-  preg_model    : 60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts
+        epilog=f"""
+{available_models_desc}
+You can either:
+  1. Use --model to select a predefined model from the config file
+  2. Use --model-dir + --epoch + --cell-types-file + --genes-file to specify everything manually
 
 Example usage:
-  # CPU (threads 32, batch size 512)
-  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device cpu --num-threads 32 --batch-size 512
+  # Use predefined model from config
+  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv
   
-  # GPU
-  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device cuda
+  # Use custom model directory
+  python deconformer_inference.py --model-dir /path/to/model --epoch 15 \\
+      --cell-types-file /path/to/cell_types.txt --genes-file /path/to/genes.txt \\
+      --input input.tsv --output output.tsv --device cuda
   
-  # macOS MPS
-  python deconformer_inference.py --model adult_model --input input.tsv --output output.tsv --device mps
+  # Use custom config file
+  python deconformer_inference.py --config my_models.json --model my_custom_model \\
+      --input input.tsv --output output.tsv
         """
     )
     
-    # 原有参数
-    parser.add_argument('--model', '-m', type=str, required=True, 
-                        help='Name of the trained model (e.g., adult_model, fetal_model, preg_model)')
+    # 配置文件参数
+    parser.add_argument('--config', type=str, default=DEFAULT_CONFIG_FILE,
+                        help=f'Path to the model config JSON file. (default: {DEFAULT_CONFIG_FILE})')
+    
+    # 方式一：使用预定义模型名称
+    parser.add_argument('--model', '-m', type=str, default=None,
+                        help='Name of a predefined model in the config file (e.g., adult_model, fetal_model, preg_model)')
+    
+    # 方式二：直接指定所有路径（覆盖配置文件）
+    parser.add_argument('--model-dir', type=str, default=None,
+                        help='Direct path to the model directory (overrides --model)')
+    parser.add_argument('--epoch', type=str, default=None,
+                        help='Epoch number of the checkpoint to use (overrides --model)')
+    parser.add_argument('--cell-types-file', type=str, default=None,
+                        help='Path to the cell types order file (overrides --model)')
+    parser.add_argument('--genes-file', type=str, default=None,
+                        help='Path to the genes list file (overrides --model)')
+    
+    # 输入输出
     parser.add_argument('--input', '-i', type=str, required=True, 
                         help='Path to the input expression matrix TSV file')
     parser.add_argument('--output', '-o', type=str, required=True, 
                         help='Path to save the output inference result TSV file')
     
-    # 新增参数：设备与并行控制
+    # 设备与并行控制
     parser.add_argument('--device', '-d', type=str, default='cpu', choices=['cpu', 'cuda', 'mps'],
                         help='Device to run inference on: cpu (default), cuda (NVIDIA GPU), mps (Apple Silicon)')
     parser.add_argument('--num-threads', '-t', type=int, default=16,
@@ -241,12 +270,53 @@ Example usage:
     
     args = parser.parse_args()
     
-    # 验证模型名称
-    if args.model not in MODEL_CONFIGS:
-        available = ", ".join(MODEL_CONFIGS.keys())
-        print(f"ERROR: '{args.model}' is not a valid model name.")
-        print(f"Available models: {available}")
-        sys.exit(1)
+    # ================= 解析模型配置 =================
+    # 如果用户没有直接指定 --model-dir，则需要从配置文件中查找
+    if args.model_dir is None:
+        # 必须提供 --model 参数
+        if args.model is None:
+            print("ERROR: You must specify either --model or --model-dir.")
+            parser.print_help()
+            sys.exit(1)
+        
+        # 加载配置文件
+        config_path = args.config
+        if not os.path.exists(config_path):
+            print(f"ERROR: Config file not found: {config_path}")
+            sys.exit(1)
+        
+        model_configs = load_model_configs(config_path)
+        
+        if args.model not in model_configs:
+            available = ", ".join(model_configs.keys())
+            print(f"ERROR: '{args.model}' is not found in config file.")
+            print(f"Available models: {available}")
+            sys.exit(1)
+        
+        config = model_configs[args.model]
+        model_base_dir = os.path.join(script_dir, config['sub_dir'])
+        epoch_str = config['epoch']
+        cell_types_path = os.path.join(model_base_dir, config['cell_types_file'])
+        genes_path = os.path.join(model_base_dir, config['genes_file'])
+    else:
+        # 用户直接指定了所有路径
+        model_base_dir = args.model_dir
+        epoch_str = args.epoch
+        cell_types_path = args.cell_types_file
+        genes_path = args.genes_file
+        
+        # 检查必需的直接参数
+        missing = []
+        if epoch_str is None:
+            missing.append('--epoch')
+        if cell_types_path is None:
+            missing.append('--cell-types-file')
+        if genes_path is None:
+            missing.append('--genes-file')
+        
+        if missing:
+            print(f"ERROR: When using --model-dir, you must also specify: {', '.join(missing)}")
+            sys.exit(1)
     
     # 解析并验证设备
     if args.device == 'cuda':
@@ -263,15 +333,6 @@ Example usage:
             device = torch.device('mps')
     else:
         device = torch.device('cpu')
-
-    # 获取脚本所在目录
-    script_dir = os.path.dirname(os.path.abspath(__file__))
-    config = MODEL_CONFIGS[args.model]
-    
-    # 构建完整路径
-    model_base_dir = os.path.join(script_dir, config['sub_dir'])
-    cell_types_path = os.path.join(model_base_dir, config['cell_types_file'])
-    genes_path = os.path.join(model_base_dir, config['genes_file'])
     
     # 检查必要文件是否存在
     for path, desc in [(model_base_dir, "Model directory"), (cell_types_path, "Cell types file"), 
@@ -280,12 +341,13 @@ Example usage:
             print(f"ERROR: {desc} not found: {path}")
             sys.exit(1)
 
-    print(f"=== RUN: {args.model} on {device.type.upper()} {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
+    model_name = args.model if args.model else os.path.basename(model_base_dir)
+    print(f"=== RUN: {model_name} on {device.type.upper()} {time.strftime('%Y-%m-%d %H:%M:%S')} ===")
     
     try:
         run_inference(
             model_dir=model_base_dir,
-            epoch_str=config['epoch'],
+            epoch_str=epoch_str,
             cell_types_file=cell_types_path,
             genes_file=genes_path,
             exp_tsv=args.input,

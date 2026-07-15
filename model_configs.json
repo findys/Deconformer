@@ -1,0 +1,23 @@
+{
+    "adult_model": {
+        "sub_dir": "checkpoints/adult_model/",
+        "epoch": "15",
+        "cell_types_file": "NBT_simu_cell_order_sccpm.txt",
+        "genes_file": "tsp_mRNA_genes.txt",
+        "description": "60 basic cell types"
+    },
+    "fetal_model": {
+        "sub_dir": "checkpoints/fetal_model/",
+        "epoch": "15",
+        "cell_types_file": "fetal_simu_cell_order_1204.txt",
+        "genes_file": "tsp_mRNA_genes.txt",
+        "description": "27 types of cells + 3 types of trophoblast cells + 4 types of fetal cells"
+    },
+    "preg_model": {
+        "sub_dir": "checkpoints/preg_model/",
+        "epoch": "9",
+        "cell_types_file": "cell_types.tsv",
+        "genes_file": "mRNA_genes.tsv",
+        "description": "60 types of cells + early and late stages of SCT, EVT, VCT, totaling six types of trophoblasts"
+    }
+}
