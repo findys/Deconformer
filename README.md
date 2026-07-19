@@ -10,7 +10,7 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 
 ## Updates
 
-**2026-07-22**: Optimized project code. Simulation data generation, model training, and model inference can now all be configured via command-line arguments. The input format for simulation data generation and model training has been changed from h5ad to HDF5. By leveraging HDF5's chunking mechanism, the simulated expression matrix is no longer loaded entirely into memory, greatly reducing memory requirements and improving efficiency when handling ultra-large simulated datasets. Additionally, through training process optimization, the memory requirement for model training at batch size 64 is now less than 20 GB, making it convenient to train models on consumer-grade GPUs such as the RTX 5090. Only the scripts have been updated; the runtime environment, dependencies, and the structure of trained checkpoints remain unchanged.
+**2026-07-22**: Optimized project code. Simulation data generation, model training, and model inference can now all be configured via command-line arguments. The input format for simulation data generation and model training has been changed from h5ad to HDF5. By leveraging HDF5's chunking mechanism, the simulated expression matrix is no longer loaded entirely into memory, greatly reducing memory requirements and improving efficiency when handling ultra-large simulated datasets. Additionally, through training process optimization, the memory requirement for model training at batch size 64 is now less than 30 GB, making it convenient to train models on consumer-grade GPUs such as the RTX 5090. Only the scripts have been updated; the runtime environment, dependencies, and the structure of trained checkpoints remain unchanged.
 
 ## Requirements
 
@@ -237,7 +237,7 @@ options:
   --mask-file MASK_FILE
                         Pre-computed pathway mask file (tsv). If None, computed from data. (default: None)
   --loss {MSE,MAE}      Loss function. (default: MSE)
-  --lr LR               Learning rate. (default: 0.0005)
+  --lr LR               Learning rate. (default: 0.0001)
   --batch-size BATCH_SIZE
                         Training batch size. (default: 64)
   --epochs EPOCHS       Number of training epochs. (default: 20)

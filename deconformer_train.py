@@ -22,7 +22,7 @@ def parse_args():
                         help='Pre-computed pathway mask file (tsv). If None, computed from data.')
     parser.add_argument('--loss', type=str, default='MSE', choices=['MSE', 'MAE'],
                         help='Loss function.')
-    parser.add_argument('--lr', type=float, default=0.0005,
+    parser.add_argument('--lr', type=float, default=0.0001,
                         help='Learning rate.')
     parser.add_argument('--batch-size', type=int, default=64,
                         help='Training batch size.')
