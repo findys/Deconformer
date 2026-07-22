@@ -260,7 +260,7 @@ python deconformer_train.py \
     --gmt resource/c5.go.bp.v2023.1.Hs.symbols.gmt \
     --project-name my_deconformer_model \
     --loss MSE \
-    --lr 0.0005 \
+    --lr 0.0001 \
     --batch-size 64 \
     --epochs 20 \
     --n-pathways 5000 \
