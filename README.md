@@ -160,6 +160,9 @@ If your device supports CUDA, it uses the GPU for inference by default; otherwis
 
 This section describes how to generate simulated cfRNA data from a single-cell reference and train a Deconformer model from scratch.
 
+> 📖 **Step-by-step tutorial available!** The companion file [`DECONFORMER_GUIDE.md`](DECONFORMER_GUIDE.md) in this repository provides a complete end-to-end walkthrough — from downloading the single-cell reference data, preprocessing it, generating simulated training data, to training and running inference with your own Deconformer model. The corresponding workflow directory (including download scripts, preprocessing notebooks, and training scripts) has been packaged and archived on Zenodo for convenient download: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19468330.svg)](https://doi.org/10.5281/zenodo.19468330)
+#
+
 #### step1: Install dependencies
 
 ```bash
@@ -269,7 +272,6 @@ python deconformer_train.py \
 
 After training, the model checkpoints and intermediate files (top variance genes, pathway–gene mask) will be saved in a directory named `my_deconformer_model_<timestamp>/`.
 
-> 📖 **Full tutorial coming soon!** A step-by-step guide covering everything from downloading the single-cell reference data, preprocessing it, generating simulated data, to training your own Deconformer model will be available shortly.
 
 ## Brief handout of ESHG2026
 
