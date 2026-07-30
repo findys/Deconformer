@@ -10,6 +10,8 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 
 ## Updates
 
+**2026-07-30**: Step-by-step code and notebooks — from downloading data from TSP datasets, processing the data, to training a custom Deconformer model — have been uploaded to [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19468330.svg)](https://doi.org/10.5281/zenodo.19468330) along with the benchmark code and intermediate files corresponding to the manuscript. You can refer to [`DECONFORMER_GUIDE.md`](DECONFORMER_GUIDE.md) for the complete Deconformer training guide.
+
 **2026-07-22**: Optimized project code. Simulation data generation, model training, and model inference can now all be configured via command-line arguments. The input format for simulation data generation and model training has been changed from h5ad to HDF5. By leveraging HDF5's chunking mechanism, the simulated expression matrix is no longer loaded entirely into memory, greatly reducing memory requirements and improving efficiency when handling ultra-large simulated datasets. Additionally, through training process optimization, the memory requirement for model training at batch size 64 is now less than 30 GB, making it convenient to train models on consumer-grade GPUs such as the RTX 5090. Only the scripts have been updated; the runtime environment, dependencies, and the structure of trained checkpoints remain unchanged.
 
 ## Requirements
