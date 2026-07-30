@@ -218,6 +218,12 @@ class SimuH5Dataset(Dataset):
 
         expression = self.h5_file['X'][h5_idx, self._sorted_gene_idx].astype(np.float32)
         expression = expression[self._gene_unsort]
+
+        # 增加 CPM 归一化（与老代码的 normalize_total 一致）
+        row_sum = expression.sum()
+        if row_sum > 0:
+            expression = expression / row_sum * 10000.0
+
         expression = np.log2(expression + 1.0)
 
         if self.training and self.dropout_rate > 0:
