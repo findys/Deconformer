@@ -5,6 +5,39 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 
 [DOI: 10.1101/2024.02.28.582494](https://doi.org/10.1101/2024.02.28.582494)
 
+## Table of Contents
+- [Deconformer](#deconformer)
+  - [Table of Contents](#table-of-contents)
+  - [Deconformer model structure](#deconformer-model-structure)
+  - [Updates](#updates)
+  - [Requirements](#requirements)
+  - [Repository Structure](#repository-structure)
+  - [Brief Guide](#brief-guide)
+    - [1. What Deconformer does](#1-what-deconformer-does)
+    - [2. Installation and quick start](#2-installation-and-quick-start)
+    - [3. Input requirements](#3-input-requirements)
+    - [4. When to use Deconformer](#4-when-to-use-deconformer)
+    - [5. Training or fine-tuning on custom references](#5-training-or-fine-tuning-on-custom-references)
+    - [6. Interpreting the output](#6-interpreting-the-output)
+    - [7. Batch effects and multi-cohort analyses](#7-batch-effects-and-multi-cohort-analyses)
+    - [8. Known limitations](#8-known-limitations)
+  - [Detailed Instructions](#detailed-instructions)
+    - [Usage 1: Using pre-trained the model to inference cfRNA samples  (recommend)](#usage-1-using-pre-trained-the-model-to-inference-cfrna-samples--recommend)
+      - [step1: Install dependencies.](#step1-install-dependencies)
+      - [step2: Download the Deconformer script and model files from GitHub.](#step2-download-the-deconformer-script-and-model-files-from-github)
+      - [step3: Cell fraction inference from example cfRNA expression profiles using Deconformer](#step3-cell-fraction-inference-from-example-cfrna-expression-profiles-using-deconformer)
+    - [Usage 2: Using pre-trained the model to inference cfRNA samples via docker image](#usage-2-using-pre-trained-the-model-to-inference-cfrna-samples-via-docker-image)
+      - [step1: Make sure you have Docker Engine or Docker Desktop installed](#step1-make-sure-you-have-docker-engine-or-docker-desktop-installed)
+      - [step2: Pull the Deconformer image from Docker Hub](#step2-pull-the-deconformer-image-from-docker-hub)
+      - [step3: Create container to start inference](#step3-create-container-to-start-inference)
+    - [Usage 3: Simulating data and training your own Deconformer model](#usage-3-simulating-data-and-training-your-own-deconformer-model)
+      - [step1: Install dependencies](#step1-install-dependencies-1)
+      - [step2: Generate simulated cfRNA data](#step2-generate-simulated-cfrna-data)
+      - [step3: Train the Deconformer model](#step3-train-the-deconformer-model)
+  - [ESHG2026](#eshg2026)
+
+---
+
 ## Deconformer model structure
 ![model structure](model_structure.png)
 
@@ -233,7 +266,7 @@ If your device supports CUDA, it uses the GPU for inference by default; otherwis
 This section describes how to generate simulated cfRNA data from a single-cell reference and train a Deconformer model from scratch.
 
 > 📖 **Step-by-step tutorial available!** The companion file [`DECONFORMER_GUIDE.md`](DECONFORMER_GUIDE.md) in this repository provides a complete end-to-end walkthrough — from downloading the single-cell reference data, preprocessing it, generating simulated training data, to training and running inference with your own Deconformer model. The corresponding workflow directory (including download scripts, preprocessing notebooks, and training scripts) has been packaged and archived on Zenodo for convenient download: [![DOI](https://zenodo.org/badge/DOI/10.5281/zenodo.19468330.svg)](https://doi.org/10.5281/zenodo.19468330)
-#
+
 
 #### step1: Install dependencies
 
@@ -345,7 +378,7 @@ python deconformer_train.py \
 After training, the model checkpoints and intermediate files (top variance genes, pathway–gene mask) will be saved in a directory named `my_deconformer_model_<timestamp>/`.
 
 
-## Brief handout of ESHG2026
+## ESHG2026
 
 [Deconformer_ESHG2026_eposter](https://sateriajiaying.github.io/Deconformer_ESHG2026_eposter/)
 
