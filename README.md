@@ -33,8 +33,78 @@ preprint article : Pathway-enhanced Transformer-based robust model for quantifyi
 * The `Analysis` subdirectory contains downstream analysis and visualization code based on the inference results of Deconformer, as presented in the article.
 * The `Dockerfile` subdirectory contains the files used for building the docker image.
 
+---
 
-## Usage
+## Brief Guide
+
+### 1. What Deconformer does
+
+Deconformer performs cell-type composition profiling of cell-free RNA (cfRNA). It adaptively integrates pathway knowledge into a Transformer architecture and predicts, for each cfRNA sample, the relative contribution of dozens of human cell types in a single pass.
+
+Two pretrained models are provided:
+
+| Model | Coverage | Intended samples |
+|---|---|---|
+| **Deconformer** | 60 major human cell types | General plasma cfRNA |
+| **Deconformer-p** | 66 cell types (60 + 6 placental trophoblast populations) | Pregnancy-related cfRNA |
+
+### 2. Installation and quick start
+
+Installation, model download and a first analysis complete in about ten minutes on a non-GPU laptop, with no single-cell reference data or complex configuration required:
+
+```bash
+# three commands: install, download model, run analysis
+pip install torch scanpy git
+git clone https://github.com/findys/Deconformer.git && cd Deconformer
+python deconformer_inference.py -m MODEL -i INPUT -o OUTPUT
+```
+
+Inference for 100 samples completes within one minute on a CPU-only laptop (8 cores, 16 GB RAM).
+
+### 3. Input requirements
+
+- A cfRNA gene-expression matrix (mRNA), provided as **raw counts or TPM**—both are accepted, and the choice has negligible practical impact (near-identical predictions; median per-sample Pearson r = 0.97 in 365 plasma samples).
+- The pipeline applies to every sample **exactly the preprocessing used for the training data**: restriction to the model's mRNA gene set and rescaling to a fixed total (10⁴), on the linear scale; **log-transformed input is not supported** at any stage.
+- No single-cell reference data are needed—the pretrained models already encapsulate the reference atlas (Tabula Sapiens–derived, with the cell-merging scheme described in the paper).
+- Sample quality matters: in our analyses, samples were required to exceed minimum RNA-detection thresholds (e.g., >10,000 detected mRNAs); very low-complexity libraries should be excluded before inference.
+
+### 4. When to use Deconformer
+
+Deconformer excels at processing **many cell types under limited computational resources**. Its efficiency makes panoramic cfRNA profiling—across most major human cell types—practical on ordinary hardware, and its low inference cost and minimal dependencies make it easy to deploy in iterative bioinformatics workflows.
+
+Deconformer is a ready-to-use alternative to tools such as CIBERSORTx for cfRNA, but it remains **one component of the analytical toolbox**. Achieving optimal performance on practical problems still requires domain expertise—differential composition analysis, phenotype association, batch correction—and creative study design.
+
+### 5. Training or fine-tuning on custom references
+
+For large datasets or non-standard biological contexts, we strongly recommend training or fine-tuning with a **custom single-cell reference dataset** rather than relying solely on the pretrained models—the cost is very low:
+
+- Training Deconformer or Deconformer-p takes **under 8 hours on a consumer-grade NVIDIA RTX 5090** (peak GPU memory ~28 GB at batch size 64); datacenter GPUs are not required.
+- Models typically converge within 15 epochs; longer training does not improve concordance and risks overfitting.
+
+### 6. Interpreting the output
+
+- Output scores represent the **relative contribution of each cell type to the plasma cfRNA pool**, not absolute cellular abundances in vivo. cfRNA levels reflect cell-type-specific RNA release, degradation and stability in addition to cellular composition.
+- We recommend **between-group comparisons** of compositional differences over interpreting absolute values in individual samples.
+- Disease-associated shifts identified in this way are best regarded as **exploratory, hypothesis-generating signals**; orthogonal validation (clinical measurements, independent cohorts) should accompany any biological interpretation.
+
+
+### 7. Batch effects and multi-cohort analyses
+
+Deconformer does not model technical batch effects. Inferred compositions can track inter-study technical differences (collection protocols, library preparation, sequencing platforms) as readily as biology. Therefore:
+
+- Apply batch correction at the cfRNA-expression or composition level before integrating cohorts.
+- Avoid direct cross-cohort comparisons without such correction; derive disease-associated signals **within** a single cohort relative to its own controls whenever possible.
+
+### 8. Known limitations
+
+1. Scalability to **bulk RNA-seq** cell-type composition analysis warrants further investigation, particularly for panels of few cell types and fine-grained subtypes.
+2. Outputs are **relative compositions** (see Section 6).
+3. **Batch effects** are not addressed internally (see Section 7).
+4. The pretrained models rely on a **single reference atlas** with a specific cell-merging scheme; results may be sensitive to this choice, which remains untested.
+
+---
+
+## Detailed Instructions
 
 ### Usage 1: Using pre-trained the model to inference cfRNA samples  (recommend)
 
