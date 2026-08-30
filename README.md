@@ -1,4 +1,5 @@
 
+
 # Deconformer
 
 preprint article : Pathway-enhanced Transformer-based robust model for quantifying cell types of origin of cell-free transcriptome
@@ -96,7 +97,7 @@ Inference for 100 samples completes within one minute on a CPU-only laptop (8 co
 
 ### 3. Input requirements
 
-- A cfRNA gene-expression matrix (mRNA), provided as **raw counts or TPM**—both are accepted, and the choice has negligible practical impact (near-identical predictions; median per-sample Pearson r = 0.97 in 365 plasma samples).
+- A cfRNA gene-expression matrix (mRNA) with rows as genes and columns as samples, provided as **raw counts or TPM**—both are accepted, and the choice has negligible practical impact (near-identical predictions; median per-sample Pearson r = 0.97 in 365 plasma samples).
 - The pipeline applies to every sample **exactly the preprocessing used for the training data**: restriction to the model's mRNA gene set and rescaling to a fixed total (10⁴), on the linear scale; **log-transformed input is not supported** at any stage.
 - No single-cell reference data are needed—the pretrained models already encapsulate the reference atlas (Tabula Sapiens–derived, with the cell-merging scheme described in the paper).
 - Sample quality matters: in our analyses, samples were required to exceed minimum RNA-detection thresholds (e.g., >10,000 detected mRNAs); very low-complexity libraries should be excluded before inference.
@@ -381,5 +382,3 @@ After training, the model checkpoints and intermediate files (top variance genes
 ## ESHG2026
 
 [Deconformer_ESHG2026_eposter](https://sateriajiaying.github.io/Deconformer_ESHG2026_eposter/)
-
-
