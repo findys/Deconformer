@@ -1,6 +1,12 @@
 
 # Deconformer
 
+> 📢 **Notice: The Deconformer paper is now online in *Briefings in Bioinformatics*!**
+>
+> Deconformer: efficient cell-type composition profiling of cfRNA across diverse cell types 
+>
+> [DOI: 10.1093/bib/bbag544](https://doi.org/10.1093/bib/bbag544)
+
 preprint article : Pathway-enhanced Transformer-based robust model for quantifying cell types of origin of cell-free transcriptome
 
 [DOI: 10.1101/2024.02.28.582494](https://doi.org/10.1101/2024.02.28.582494)
