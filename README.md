@@ -93,7 +93,7 @@ Installation, model download and a first analysis complete in about ten minutes 
 
 ```bash
 # three commands: install, download model, run analysis
-pip install torch scanpy git
+pip install torch scanpy git opt_einsum
 git clone https://github.com/findys/Deconformer.git && cd Deconformer
 python deconformer_inference.py -m MODEL -i INPUT -o OUTPUT
 ```
@@ -154,10 +154,12 @@ Thanks to Deconformer's compact model size, inference for approximately 100 samp
 #### step1: Install dependencies.
 
 ```bash
-pip install torch scanpy git
+pip install torch scanpy git opt_einsum
 # or use conda:
-# conda create -n Deconformer -c conda-forge -y python==3.12 git && conda activate Deconformer && pip install torch scanpy
+# conda create -n Deconformer -c conda-forge -y python==3.12 git && conda activate Deconformer && pip install torch scanpy opt_einsum
 ```
+
+> Note: `opt_einsum` is a tiny pure-Python package that lets PyTorch pick the optimal contraction order for the `einsum` in the model forward pass. Without it, PyTorch falls back to a naive contraction order that can materialize a huge intermediate tensor (tens of GB at batch size 64) and get the process OOM-killed on machines with limited RAM.
 
 > Note: Since the CPU's computational speed is sufficient for Deconformer, we have installed the CPU-only version of the PyTorch library here. If you need to run Deconformer on a GPU, you can choose to install the GPU-enabled version of PyTorch instead.
 
@@ -277,9 +279,9 @@ This section describes how to generate simulated cfRNA data from a single-cell r
 #### step1: Install dependencies
 
 ```bash
-pip install torch scanpy h5py numba joblib tqdm pandas numpy
+pip install torch scanpy h5py numba joblib tqdm pandas numpy opt_einsum
 # or use conda:
-# conda create -n Deconformer -c conda-forge -y python==3.12 && conda activate Deconformer && pip install torch scanpy h5py numba joblib tqdm pandas numpy
+# conda create -n Deconformer -c conda-forge -y python==3.12 && conda activate Deconformer && pip install torch scanpy h5py numba joblib tqdm pandas numpy opt_einsum
 ```
 
 > Note: If you plan to train on GPU, make sure to install the CUDA-enabled version of PyTorch.
